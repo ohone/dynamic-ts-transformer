@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../../chrome-extension"
+		},
+		{
+			"path": "../../ChromeMessenger"
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {}
+}

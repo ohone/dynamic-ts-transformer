@@ -1,6 +1,6 @@
 declare global {
     interface AsyncMock {
-        [K: string]: AsyncMock | ((...args: any[]) => Promise<AsyncMock>);
+        [K: string]: Promise<AsyncMock> | ((...args: any[]) => Promise<AsyncMock>);
     }
     
     const chrome: AsyncMock;
