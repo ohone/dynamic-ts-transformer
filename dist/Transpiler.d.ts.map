@@ -1,1 +1,1 @@
-{"version":3,"file":"Transpiler.d.ts","sourceRoot":"","sources":["../src/Transpiler.ts"],"names":[],"mappings":"AAOA,wBAAsB,mBAAmB,CACvC,UAAU,EAAE,MAAM,EAClB,SAAS,EAAE,MAAM,EACjB,eAAe,EAAE,MAAM,EAAE,EACzB,KAAK,GAAE,OAAe,mBAuBvB"}
+{"version":3,"file":"Transpiler.d.ts","sourceRoot":"","sources":["../src/Transpiler.ts"],"names":[],"mappings":"AAUA,wBAAsB,mBAAmB,CACvC,UAAU,EAAE,MAAM,EAClB,SAAS,CAAC,EAAE,MAAM,GAAG,SAAS,EAC9B,eAAe,GAAE,MAAM,EAAO,EAC9B,KAAK,GAAE,OAAe,mBA2BvB"}

@@ -1,17 +1,24 @@
-import ts, { isCallExpression } from "typescript";
-import { getTypeDefinitions } from "./generated/type-definitions.js";
+import ts from "typescript";
+import { getTypeDefinitions } from "./type-definitions.js";
 
-const runtimeTypes: Record<string, (names: string[], debug: boolean) => string> = {
+const runtimeTypes: Record<
+  string,
+  (names: string[], debug: boolean) => string
+> = {
   "node_modules/my-runtime-types.d.ts": getTypeDefinitions,
 };
 
 export async function transpileTypescript(
   codeString: string,
-  sourceUrl: string,
-  globalMockNames: string[],
+  sourceUrl?: string | undefined,
+  globalMockNames: string[] = [],
   debug: boolean = false
 ) {
-  const typeChecker = await createTypeChecker(codeString, globalMockNames, debug);
+  const typeChecker = await createTypeChecker(
+    codeString,
+    globalMockNames,
+    debug
+  );
   const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
@@ -95,110 +102,121 @@ async function createInMemoryCompilerHost(
   };
 }
 
+const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+const printNode = (node: ts.Node, debug: boolean) =>
+  debug &&
+  console.log(
+    printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile())
+  );
+
 function createTransformer(
   typeChecker: ts.TypeChecker,
   debug: boolean
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context) => {
     const visit: ts.Visitor = (node: ts.Node): ts.Node => {
-      debug && console.log(`Visiting node: ${node.getText()}`, node);
+      printNode(node, debug);
 
-      // Handle property access expressions
-      if (ts.isPropertyAccessExpression(node)) {
-        debug && console.log("Visiting property access:", node);
-        const expressionType = typeChecker.getTypeAtLocation(node.expression);
-        const expressionSymbol = typeChecker.getSymbolAtLocation(node.expression);
-        debug && console.log("Property access expression type:", expressionType);
-        debug && console.log("Property access expression symbol:", expressionSymbol);
+      // Handle property access and call expressions
+      if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) {
+
+        let leftmostExp = node;
+        while (ts.isPropertyAccessExpression(leftmostExp.expression) || 
+               ts.isCallExpression(leftmostExp.expression)) {
+          leftmostExp = leftmostExp.expression;
+        }
         
-        // Get the declaration of the identifier
-        if (ts.isIdentifier(node.expression)) {
-          const symbol = typeChecker.getSymbolAtLocation(node.expression);
-          if (symbol?.declarations?.[0]) {
-            const declType = typeChecker.getTypeAtLocation(symbol.declarations[0]);
-            debug && console.log("Declaration type:", declType);
-            if (isRipulTransformedType(declType)) {
-              debug && console.log("Found AsyncMock type in property access via declaration");
-              return ts.factory.createAwaitExpression(node);
+        const baseType = typeChecker.getTypeAtLocation(leftmostExp.expression);
+        
+        if (isAsyncMockType(baseType)) {
+
+          if (ts.isCallExpression(node)) {
+            const visitedExpression = ts.visitNode(
+              node.expression,
+              visit
+            ) as ts.Expression;
+
+            printNode(visitedExpression, debug);
+
+            const callExpression = ts.factory.createCallExpression(
+              visitedExpression,
+              node.typeArguments,
+              node.arguments
+            );
+
+            printNode(callExpression, debug);
+
+            const parenthesizedExpression =
+              ts.factory.createParenthesizedExpression(callExpression);
+
+            printNode(parenthesizedExpression, debug);
+
+            const result = ts.factory.createAwaitExpression(
+              parenthesizedExpression
+            );
+
+            printNode(result, debug);
+            return result;
+          } else {
+            // Only transform property access if we're accessing a property of an AsyncMock result
+            const parent = node.parent;
+            if (!ts.isCallExpression(parent)) {
+              // If this property isn't being called directly, transform it to a call
+              const transformedExpression = ts.visitNode(
+                node.expression,
+                visit
+              ) as ts.Expression;
+
+              printNode(transformedExpression, debug);
+
+              const propertyAccess = ts.factory.createPropertyAccessExpression(
+                transformedExpression,
+                node.name
+              );
+
+              printNode(propertyAccess, debug);
+
+              const functionCall = ts.factory.createCallExpression(
+                propertyAccess,
+                undefined,
+                []
+              );
+
+              printNode(functionCall, debug);
+
+              const awaitExp = ts.factory.createAwaitExpression(
+                functionCall
+                //ts.factory.createParenthesizedExpression(functionCall)
+              );
+
+              printNode(awaitExp, debug);
+              return awaitExp;
             }
           }
-        }
-
-        if (isRipulTransformedType(expressionType)) {
-          debug && console.log("Found AsyncMock type in property access", expressionType);
-          return ts.factory.createAwaitExpression(node);
         }
       }
 
       // Handle variable declarations
       if (ts.isVariableDeclaration(node)) {
         debug && console.log("Variable declaration:", node.getText());
-        if (node.initializer) {
-          const initializerType = typeChecker.getTypeAtLocation(node.initializer);
-          const variableType = typeChecker.getTypeAtLocation(node);
-          debug && console.log("Initializer type:", initializerType);
-          debug && console.log("Variable type:", variableType);
-          
-          // Store the type information in the symbol table
-          if (ts.isIdentifier(node.name)) {
-            const symbol = typeChecker.getSymbolAtLocation(node.name);
-            if (symbol && isRipulTransformedType(initializerType)) {
-              debug && console.log("Marking variable as AsyncMock:", node.name.getText());
-              // You might need to modify your type checker to store this information
-            }
-          }
-        }
-      }
-
-      // Handle call expressions
-      if (ts.isCallExpression(node)) {
-        debug && console.log("Visiting call expression:", node);
-        // Check the base object type (e.g., 'document' in document.querySelector)
-        const baseObj = getBaseObject(node.expression);
-        const baseObjType = baseObj && typeChecker.getTypeAtLocation(baseObj);
-        
-        if (baseObjType && isRipulTransformedType(baseObjType)) {
-          debug && console.log("Found ripul type in base object of call expression", baseObjType);
-          return ts.factory.createAwaitExpression(node);
-        }
-
-        const expressionType = typeChecker.getTypeAtLocation(node.expression);
-        debug && console.log("expressionType:", expressionType.symbol);
-        if (isRipulTransformedType(expressionType)) {
-          debug && console.log("Found ripul type in call expression", expressionType);
-          return ts.factory.createAwaitExpression(node);
-        }
       }
 
       return ts.visitEachChild(node, visit, context);
     };
 
-    // Helper function to get the base object of a property access chain
-    function getBaseObject(node: ts.Node): ts.Node | undefined {
-      if (ts.isPropertyAccessExpression(node)) {
-        return getBaseObject(node.expression);
-      }
-      if (ts.isCallExpression(node)) {
-        return getBaseObject(node.expression);
-      }
-      return node;
-    }
-
-    function isRipulTransformedType(type: ts.Type): boolean {
-      debug && console.log("Checking type:", type);
-      
+    function isAsyncMockType(type: ts.Type): boolean {
       if (!type) return false;
       // Check for error types
       if (type.flags & ts.TypeFlags.Any || type.flags & ts.TypeFlags.Unknown) {
-        debug && console.log("Found error or any type");
         return false;
       }
 
       // Check if it's a Promise<AsyncMock>
       if (type.symbol?.name === "Promise") {
-        const typeArguments = type.aliasTypeArguments || (type as any).typeArguments;
+        const typeArguments =
+          type.aliasTypeArguments || (type as any).typeArguments;
         if (typeArguments && typeArguments.length > 0) {
-          return isRipulTransformedType(typeArguments[0]);
+          return isAsyncMockType(typeArguments[0]);
         }
       }
 
@@ -207,16 +225,23 @@ function createTransformer(
         return true;
       }
 
+      // Check if it's a call expression type - using proper bitwise comparison
+      if ((type.flags & ts.TypeFlags.Object) !== 0) {
+        // changed from === true
+        const objType = type as ts.ObjectType;
+        const callSignatures = objType.getCallSignatures();
+        if (callSignatures.length > 0) {
+          const returnType = typeChecker.getReturnTypeOfSignature(
+            callSignatures[0]
+          );
+          return isAsyncMockType(returnType);
+        }
+      }
+
       // Check if it's a property of AsyncMock
       const parentType = (type as any).parent;
       if (parentType?.symbol?.name === "AsyncMock") {
         return true;
-      }
-
-      // Check if it's a union type
-      if (type.flags & ts.TypeFlags.Union) {
-        const unionType = type as ts.UnionType;
-        return unionType.types.some(t => isRipulTransformedType(t));
       }
 
       return false;

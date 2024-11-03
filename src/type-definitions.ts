@@ -1,5 +1,5 @@
-export function getTypeDefinitions(names, debug = false) {
-    const typeDef = `
+export function getTypeDefinitions(names: string[], debug: boolean = false) {
+  const typeDef =  `
 declare global {
     interface AsyncMock {
         [K: string]: ((...args: any[]) => AsyncMock);
@@ -13,4 +13,3 @@ export {}
     debug && console.log(typeDef);
     return typeDef;
 }
-//# sourceMappingURL=type-definitions.js.map
