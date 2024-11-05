@@ -102,11 +102,15 @@ async function createInMemoryCompilerHost(
   };
 }
 
-const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+const getPrinter = (() => {
+  let printer: ts.Printer | undefined = undefined;
+  return () => printer ??= ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+})();
+
 const printNode = (node: ts.Node, debug: boolean) =>
   debug &&
   console.log(
-    printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile())
+    getPrinter().printNode(ts.EmitHint.Unspecified, node, node.getSourceFile())
   );
 
 function createTransformer(
@@ -201,7 +205,6 @@ function createTransformer(
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        console.log("Binary expression");
         let leftmostExp = node.left;
         while (
           ts.isPropertyAccessExpression(leftmostExp) ||
@@ -222,22 +225,18 @@ function createTransformer(
             visit
           ) as ts.Expression;
 
-          console.log("Transformed left side");
           printNode(transformedLeftSide, debug);
 
-          console.log("Transformed right side");
           printNode(transformedRightSide, debug);
 
           const innerLeftSide = (transformedLeftSide as ts.AwaitExpression)
             .expression;
 
-          console.log("Inner left side");
           printNode(innerLeftSide, debug);
 
           const methodCall = (innerLeftSide as ts.AwaitExpression)
             .expression as ts.CallExpression;
 
-          console.log("Method call");
           printNode(methodCall, debug);
 
           const newCallExpr = ts.factory.createCallExpression(
@@ -246,7 +245,6 @@ function createTransformer(
             [createObjectLiteral(transformedRightSide)]
           );
 
-          console.log("New call expression");
           printNode(newCallExpr, debug);
 
           const result = ts.factory.createAwaitExpression(newCallExpr);

@@ -68,9 +68,12 @@ async function createInMemoryCompilerHost(sourceCode, globalMockNames, debug = f
         },
     };
 }
-const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+const getPrinter = (() => {
+    let printer = undefined;
+    return () => printer ??= ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+})();
 const printNode = (node, debug) => debug &&
-    console.log(printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()));
+    console.log(getPrinter().printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()));
 function createTransformer(typeChecker, debug) {
     return (context) => {
         const visit = (node) => {
@@ -118,7 +121,6 @@ function createTransformer(typeChecker, debug) {
             // Handle variable declarations
             if (ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-                console.log("Binary expression");
                 let leftmostExp = node.left;
                 while (ts.isPropertyAccessExpression(leftmostExp) ||
                     ts.isCallExpression(leftmostExp)) {
@@ -128,20 +130,15 @@ function createTransformer(typeChecker, debug) {
                 if (isAsyncMockType(baseType)) {
                     const transformedLeftSide = ts.visitNode(node.left, visit);
                     const transformedRightSide = ts.visitNode(node.right, visit);
-                    console.log("Transformed left side");
                     printNode(transformedLeftSide, debug);
-                    console.log("Transformed right side");
                     printNode(transformedRightSide, debug);
                     const innerLeftSide = transformedLeftSide
                         .expression;
-                    console.log("Inner left side");
                     printNode(innerLeftSide, debug);
                     const methodCall = innerLeftSide
                         .expression;
-                    console.log("Method call");
                     printNode(methodCall, debug);
                     const newCallExpr = ts.factory.createCallExpression(methodCall, methodCall.typeArguments, [createObjectLiteral(transformedRightSide)]);
-                    console.log("New call expression");
                     printNode(newCallExpr, debug);
                     const result = ts.factory.createAwaitExpression(newCallExpr);
                     printNode(result, debug);
