@@ -4,7 +4,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     `
         const ads = document.querySelector("ads").parentNode;
         ads.parentNode.removeChild(ads);
-        const c = document.textContent;
+        ads.innerHTML = document.title;
     `,
     "http://localhost:8080/dev.ts",
     ["window", "document"],

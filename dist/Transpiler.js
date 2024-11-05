@@ -116,8 +116,37 @@ function createTransformer(typeChecker, debug) {
                 }
             }
             // Handle variable declarations
-            if (ts.isVariableDeclaration(node)) {
-                debug && console.log("Variable declaration:", node.getText());
+            if (ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+                console.log("Binary expression");
+                let leftmostExp = node.left;
+                while (ts.isPropertyAccessExpression(leftmostExp) ||
+                    ts.isCallExpression(leftmostExp)) {
+                    leftmostExp = leftmostExp.expression;
+                }
+                const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+                if (isAsyncMockType(baseType)) {
+                    const transformedLeftSide = ts.visitNode(node.left, visit);
+                    const transformedRightSide = ts.visitNode(node.right, visit);
+                    console.log("Transformed left side");
+                    printNode(transformedLeftSide, debug);
+                    console.log("Transformed right side");
+                    printNode(transformedRightSide, debug);
+                    const innerLeftSide = transformedLeftSide
+                        .expression;
+                    console.log("Inner left side");
+                    printNode(innerLeftSide, debug);
+                    const methodCall = innerLeftSide
+                        .expression;
+                    console.log("Method call");
+                    printNode(methodCall, debug);
+                    const newCallExpr = ts.factory.createCallExpression(methodCall, methodCall.typeArguments, [createObjectLiteral(transformedRightSide)]);
+                    console.log("New call expression");
+                    printNode(newCallExpr, debug);
+                    const result = ts.factory.createAwaitExpression(newCallExpr);
+                    printNode(result, debug);
+                    return result;
+                }
             }
             return ts.visitEachChild(node, visit, context);
         };
@@ -175,5 +204,13 @@ async function createTypeChecker(sourceCode, globalObjectNames, debug) {
     const compilerHost = await createInMemoryCompilerHost(sourceCode, globalObjectNames, debug);
     const program = createProgram(compilerHost);
     return program.getTypeChecker();
+}
+function createObjectLiteral(rightSideExpr) {
+    return ts.factory.createObjectLiteralExpression([
+        // Create the 'type' property
+        ts.factory.createPropertyAssignment(ts.factory.createStringLiteral('type'), ts.factory.createStringLiteral('assignment')),
+        // Create the 'value' property with the expression
+        ts.factory.createPropertyAssignment(ts.factory.createStringLiteral('value'), rightSideExpr)
+    ], true); // true for multiline formatting
 }
 //# sourceMappingURL=Transpiler.js.map

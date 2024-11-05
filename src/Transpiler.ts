@@ -119,17 +119,17 @@ function createTransformer(
 
       // Handle property access and call expressions
       if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) {
-
         let leftmostExp = node;
-        while (ts.isPropertyAccessExpression(leftmostExp.expression) || 
-               ts.isCallExpression(leftmostExp.expression)) {
+        while (
+          ts.isPropertyAccessExpression(leftmostExp.expression) ||
+          ts.isCallExpression(leftmostExp.expression)
+        ) {
           leftmostExp = leftmostExp.expression;
         }
-        
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp.expression);
-        
-        if (isAsyncMockType(baseType)) {
 
+        const baseType = typeChecker.getTypeAtLocation(leftmostExp.expression);
+
+        if (isAsyncMockType(baseType)) {
           if (ts.isCallExpression(node)) {
             const visitedExpression = ts.visitNode(
               node.expression,
@@ -197,8 +197,63 @@ function createTransformer(
       }
 
       // Handle variable declarations
-      if (ts.isVariableDeclaration(node)) {
-        debug && console.log("Variable declaration:", node.getText());
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        console.log("Binary expression");
+        let leftmostExp = node.left;
+        while (
+          ts.isPropertyAccessExpression(leftmostExp) ||
+          ts.isCallExpression(leftmostExp)
+        ) {
+          leftmostExp = leftmostExp.expression;
+        }
+
+        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+        if (isAsyncMockType(baseType)) {
+          const transformedLeftSide = ts.visitNode(
+            node.left,
+            visit
+          ) as ts.Expression;
+
+          const transformedRightSide = ts.visitNode(
+            node.right,
+            visit
+          ) as ts.Expression;
+
+          console.log("Transformed left side");
+          printNode(transformedLeftSide, debug);
+
+          console.log("Transformed right side");
+          printNode(transformedRightSide, debug);
+
+          const innerLeftSide = (transformedLeftSide as ts.AwaitExpression)
+            .expression;
+
+          console.log("Inner left side");
+          printNode(innerLeftSide, debug);
+
+          const methodCall = (innerLeftSide as ts.AwaitExpression)
+            .expression as ts.CallExpression;
+
+          console.log("Method call");
+          printNode(methodCall, debug);
+
+          const newCallExpr = ts.factory.createCallExpression(
+            methodCall,
+            methodCall.typeArguments,
+            [createObjectLiteral(transformedRightSide)]
+          );
+
+          console.log("New call expression");
+          printNode(newCallExpr, debug);
+
+          const result = ts.factory.createAwaitExpression(newCallExpr);
+
+          printNode(result, debug);
+          return result;
+        }
       }
 
       return ts.visitEachChild(node, visit, context);
@@ -276,4 +331,19 @@ async function createTypeChecker(
   );
   const program = createProgram(compilerHost);
   return program.getTypeChecker();
+}
+
+function createObjectLiteral(rightSideExpr: ts.Expression): ts.Expression {
+  return ts.factory.createObjectLiteralExpression([
+    // Create the 'type' property
+    ts.factory.createPropertyAssignment(
+      ts.factory.createStringLiteral('type'),
+      ts.factory.createStringLiteral('assignment')
+    ),
+    // Create the 'value' property with the expression
+    ts.factory.createPropertyAssignment(
+      ts.factory.createStringLiteral('value'),
+      rightSideExpr
+    )
+  ], true); // true for multiline formatting
 }
