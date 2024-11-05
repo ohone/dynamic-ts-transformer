@@ -1,6 +1,8 @@
 import ts from "typescript";
 import { getTypeDefinitions } from "./type-definitions.js";
 
+const rootFileName = "input.ts";
+
 const runtimeTypes: Record<
   string,
   (names: string[], debug: boolean) => string
@@ -47,7 +49,7 @@ async function createInMemoryCompilerHost(
   debug: boolean = false
 ): Promise<ts.CompilerHost> {
   const sourceFile = ts.createSourceFile(
-    "input.ts",
+    rootFileName,
     sourceCode,
     ts.ScriptTarget.Latest,
     true
@@ -55,7 +57,7 @@ async function createInMemoryCompilerHost(
 
   return {
     getSourceFile: (fileName: string, languageVersion: ts.ScriptTarget) => {
-      if (fileName === "input.ts") {
+      if (fileName === rootFileName) {
         return sourceFile;
       }
       if (runtimeTypes[fileName] !== undefined) {
@@ -77,7 +79,7 @@ async function createInMemoryCompilerHost(
     getNewLine: () => "\n",
     getDirectories: () => [],
     fileExists: (fileName: string) => {
-      if (fileName === "input.ts") {
+      if (fileName === rootFileName) {
         return true;
       }
       if (runtimeTypes[fileName] !== undefined) {
@@ -89,7 +91,7 @@ async function createInMemoryCompilerHost(
       return false;
     },
     readFile: (fileName: string) => {
-      if (fileName === "input.ts") {
+      if (fileName === rootFileName) {
         return sourceCode;
       }
       if (runtimeTypes[fileName] !== undefined) {
@@ -104,7 +106,8 @@ async function createInMemoryCompilerHost(
 
 const getPrinter = (() => {
   let printer: ts.Printer | undefined = undefined;
-  return () => printer ??= ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+  return () =>
+    (printer ??= ts.createPrinter({ newLine: ts.NewLineKind.LineFeed }));
 })();
 
 const printNode = (node: ts.Node, debug: boolean) =>
@@ -121,193 +124,206 @@ function createTransformer(
     const visit: ts.Visitor = (node: ts.Node): ts.Node => {
       printNode(node, debug);
 
-      // Handle property access and call expressions
+      // Check for property access or call expression
       if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) {
-        let leftmostExp = node;
-        while (
-          ts.isPropertyAccessExpression(leftmostExp.expression) ||
-          ts.isCallExpression(leftmostExp.expression)
-        ) {
-          leftmostExp = leftmostExp.expression;
-        }
+        const leftmostExp = findLeftmostExpression(node);
+        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
 
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp.expression);
-
-        if (isAsyncMockType(baseType)) {
+        if (isAsyncMockType(baseType, typeChecker)) {
           if (ts.isCallExpression(node)) {
-            const visitedExpression = ts.visitNode(
-              node.expression,
-              visit
-            ) as ts.Expression;
-
-            printNode(visitedExpression, debug);
-
-            const callExpression = ts.factory.createCallExpression(
-              visitedExpression,
-              node.typeArguments,
-              node.arguments
-            );
-
-            printNode(callExpression, debug);
-
-            const parenthesizedExpression =
-              ts.factory.createParenthesizedExpression(callExpression);
-
-            printNode(parenthesizedExpression, debug);
-
-            const result = ts.factory.createAwaitExpression(
-              parenthesizedExpression
-            );
-
+            console.warn("Call expression");
+            printNode(node, debug);
+            const result = transformCallExpression(node, visit, typeChecker, debug);
+            console.warn("Transformed to");
             printNode(result, debug);
             return result;
           } else {
-            // Only transform property access if we're accessing a property of an AsyncMock result
-            const parent = node.parent;
-            if (!ts.isCallExpression(parent)) {
-              // If this property isn't being called directly, transform it to a call
-              const transformedExpression = ts.visitNode(
-                node.expression,
-                visit
-              ) as ts.Expression;
+            console.warn("Property access");
+            printNode(node, debug);
+            const transformed = transformPropertyAccess(node as ts.PropertyAccessExpression, visit, debug);
 
-              printNode(transformedExpression, debug);
-
-              const propertyAccess = ts.factory.createPropertyAccessExpression(
-                transformedExpression,
-                node.name
-              );
-
-              printNode(propertyAccess, debug);
-
-              const functionCall = ts.factory.createCallExpression(
-                propertyAccess,
-                undefined,
-                []
-              );
-
-              printNode(functionCall, debug);
-
-              const awaitExp = ts.factory.createAwaitExpression(
-                functionCall
-                //ts.factory.createParenthesizedExpression(functionCall)
-              );
-
-              printNode(awaitExp, debug);
-              return awaitExp;
+            if (transformed){
+              console.warn("Transformed to");
+              printNode(transformed, debug);
+              return transformed;
+            }
+            else{
+              console.warn("No transformation");
             }
           }
         }
       }
-
-      // Handle variable declarations
-      if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      ) {
-        let leftmostExp = node.left;
-        while (
-          ts.isPropertyAccessExpression(leftmostExp) ||
-          ts.isCallExpression(leftmostExp)
-        ) {
-          leftmostExp = leftmostExp.expression;
-        }
-
+      
+      // Check for assignment
+      if (ts.isBinaryExpression(node) && 
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const leftmostExp = findLeftmostExpression(node.left);
         const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-        if (isAsyncMockType(baseType)) {
-          const transformedLeftSide = ts.visitNode(
-            node.left,
-            visit
-          ) as ts.Expression;
 
-          const transformedRightSide = ts.visitNode(
-            node.right,
-            visit
-          ) as ts.Expression;
-
-          printNode(transformedLeftSide, debug);
-
-          printNode(transformedRightSide, debug);
-
-          const innerLeftSide = (transformedLeftSide as ts.AwaitExpression)
-            .expression;
-
-          printNode(innerLeftSide, debug);
-
-          const methodCall = (innerLeftSide as ts.AwaitExpression)
-            .expression as ts.CallExpression;
-
-          printNode(methodCall, debug);
-
-          const newCallExpr = ts.factory.createCallExpression(
-            methodCall,
-            methodCall.typeArguments,
-            [createObjectLiteral(transformedRightSide)]
-          );
-
-          printNode(newCallExpr, debug);
-
-          const result = ts.factory.createAwaitExpression(newCallExpr);
-
-          printNode(result, debug);
-          return result;
+        if (isAsyncMockType(baseType, typeChecker)) {
+          return transformAssignment(node, visit, debug);
         }
       }
 
       return ts.visitEachChild(node, visit, context);
     };
 
-    function isAsyncMockType(type: ts.Type): boolean {
-      if (!type) return false;
-      // Check for error types
-      if (type.flags & ts.TypeFlags.Any || type.flags & ts.TypeFlags.Unknown) {
-        return false;
-      }
-
-      // Check if it's a Promise<AsyncMock>
-      if (type.symbol?.name === "Promise") {
-        const typeArguments =
-          type.aliasTypeArguments || (type as any).typeArguments;
-        if (typeArguments && typeArguments.length > 0) {
-          return isAsyncMockType(typeArguments[0]);
-        }
-      }
-
-      // Direct AsyncMock check
-      if (type.symbol?.name === "AsyncMock") {
-        return true;
-      }
-
-      // Check if it's a call expression type - using proper bitwise comparison
-      if ((type.flags & ts.TypeFlags.Object) !== 0) {
-        // changed from === true
-        const objType = type as ts.ObjectType;
-        const callSignatures = objType.getCallSignatures();
-        if (callSignatures.length > 0) {
-          const returnType = typeChecker.getReturnTypeOfSignature(
-            callSignatures[0]
-          );
-          return isAsyncMockType(returnType);
-        }
-      }
-
-      // Check if it's a property of AsyncMock
-      const parentType = (type as any).parent;
-      if (parentType?.symbol?.name === "AsyncMock") {
-        return true;
-      }
-
-      return false;
-    }
-
     return (sourceFile) => ts.visitNode(sourceFile, visit) as ts.SourceFile;
   };
+}
+
+// Helper functions
+function findLeftmostExpression(node: ts.Node): ts.Expression {
+  let leftmostExp = node as ts.Expression;
+  while (
+    ts.isPropertyAccessExpression(leftmostExp) ||
+    ts.isCallExpression(leftmostExp)
+  ) {
+    leftmostExp = leftmostExp.expression;
+  }
+  return leftmostExp;
+}
+
+function transformCallExpression(
+  node: ts.CallExpression,
+  visit: ts.Visitor,
+  typeChecker: ts.TypeChecker,
+  debug: boolean
+): ts.Node {
+  console.log("Call expression");
+  printNode(node, debug);
+
+  const visitedExpression = ts.visitNode(node.expression, visit) as ts.Expression;
+  // Transform each argument and await it if it's a property access on an AsyncMock
+  const transformedArguments = node.arguments.map(arg => {
+    console.log("Argument");
+    printNode(arg, debug);
+    const visited = ts.visitNode(arg, visit) as ts.Expression;
+    console.log("Visited argument");
+    printNode(visited, debug);
+    // If the argument is a property access that wasn't transformed (because it was in an argument position),
+    // we need to transform it now
+    if (ts.isPropertyAccessExpression(arg)) {
+      console.log("Property access");
+      const leftmostExp = findLeftmostExpression(arg);
+      const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+      if (isAsyncMockType(baseType, typeChecker)) {
+        return transformPropertyAccess(arg, visit, debug) || visited;
+      }
+    }
+    return visited;
+  });
+
+  const callExpression = ts.factory.createCallExpression(
+    visitedExpression,
+    node.typeArguments,
+    transformedArguments as ts.Expression[]
+  );
+
+  return ts.factory.createAwaitExpression(
+    ts.factory.createParenthesizedExpression(callExpression)
+  );
+}
+
+function transformPropertyAccess(
+  node: ts.PropertyAccessExpression,
+  visit: ts.Visitor,
+  debug: boolean
+): ts.Node | undefined {
+  console.log("Property access");
+  
+  const parent = node.parent;
+  if (ts.isCallExpression(parent) && parent.expression === node) {
+    return undefined;
+  }
+
+  const transformedExpression = ts.visitNode(
+    node.expression,
+    visit
+  ) as ts.Expression;
+
+  const propertyAccess = ts.factory.createPropertyAccessExpression(
+    transformedExpression,
+    node.name
+  );
+
+  const functionCall = ts.factory.createCallExpression(
+    propertyAccess,
+    undefined,
+    []
+  );
+
+  return ts.factory.createAwaitExpression(functionCall);
+}
+
+function transformAssignment(
+  node: ts.BinaryExpression,
+  visit: ts.Visitor,
+  debug: boolean
+): ts.Node {
+  const transformedLeftSide = ts.visitNode(node.left, visit) as ts.Expression;
+  const transformedRightSide = ts.visitNode(node.right, visit) as ts.Expression;
+
+  const innerLeftSide = (transformedLeftSide as ts.AwaitExpression).expression;
+  const methodCall = (innerLeftSide as ts.AwaitExpression)
+    .expression as ts.CallExpression;
+
+  const newCallExpr = ts.factory.createCallExpression(
+    methodCall,
+    methodCall.typeArguments,
+    [createObjectLiteral(transformedRightSide)]
+  );
+
+  return ts.factory.createAwaitExpression(newCallExpr);
+}
+
+function isAsyncMockType(type: ts.Type, typeChecker: ts.TypeChecker): boolean {
+  if (!type) return false;
+  // Check for error types
+  if (type.flags & ts.TypeFlags.Any || type.flags & ts.TypeFlags.Unknown) {
+    return false;
+  }
+
+  // Check if it's a Promise<AsyncMock>
+  if (type.symbol?.name === "Promise") {
+    const typeArguments =
+      type.aliasTypeArguments || (type as any).typeArguments;
+    if (typeArguments && typeArguments.length > 0) {
+      return isAsyncMockType(typeArguments[0], typeChecker);
+    }
+  }
+
+  // Direct AsyncMock check
+  if (type.symbol?.name === "AsyncMock") {
+    return true;
+  }
+
+  // Check if it's a call expression type - using proper bitwise comparison
+  if ((type.flags & ts.TypeFlags.Object) !== 0) {
+    // changed from === true
+    const objType = type as ts.ObjectType;
+    const callSignatures = objType.getCallSignatures();
+    if (callSignatures.length > 0) {
+      const returnType = typeChecker.getReturnTypeOfSignature(
+        callSignatures[0]
+      );
+      return isAsyncMockType(returnType, typeChecker);
+    }
+  }
+
+  // Check if it's a property of AsyncMock
+  const parentType = (type as any).parent;
+  if (parentType?.symbol?.name === "AsyncMock") {
+    return true;
+  }
+
+  return false;
 }
 
 function createProgram(compilerHost: ts.CompilerHost) {
   // Create a program to trigger lib loading
   const program = ts.createProgram({
-    rootNames: ["input.ts"],
+    rootNames: [rootFileName],
     options: {
       types: ["my-runtime-types"],
       target: ts.ScriptTarget.ESNext,
@@ -331,17 +347,40 @@ async function createTypeChecker(
   return program.getTypeChecker();
 }
 
+
+function functionIsAsync(node: ts.FunctionLikeDeclaration): boolean {
+  return !!node.modifiers?.some(
+    (mod) => mod.kind === ts.SyntaxKind.AsyncKeyword
+  );
+}
+
+function transformContainingFunction(node: ts.Node): ts.Node {
+  return node;
+}
+
+function nodeIsFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
+  return (
+    ts.isArrowFunction(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isMethodDeclaration(node)
+  );
+}
+
 function createObjectLiteral(rightSideExpr: ts.Expression): ts.Expression {
-  return ts.factory.createObjectLiteralExpression([
-    // Create the 'type' property
-    ts.factory.createPropertyAssignment(
-      ts.factory.createStringLiteral('type'),
-      ts.factory.createStringLiteral('assignment')
-    ),
-    // Create the 'value' property with the expression
-    ts.factory.createPropertyAssignment(
-      ts.factory.createStringLiteral('value'),
-      rightSideExpr
-    )
-  ], true); // true for multiline formatting
+  return ts.factory.createObjectLiteralExpression(
+    [
+      // Create the 'type' property
+      ts.factory.createPropertyAssignment(
+        ts.factory.createStringLiteral("type"),
+        ts.factory.createStringLiteral("assignment")
+      ),
+      // Create the 'value' property with the expression
+      ts.factory.createPropertyAssignment(
+        ts.factory.createStringLiteral("value"),
+        rightSideExpr
+      ),
+    ],
+    true
+  ); // true for multiline formatting
 }
