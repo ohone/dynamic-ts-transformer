@@ -133,30 +133,40 @@ function createTransformer(
           if (ts.isCallExpression(node)) {
             console.warn("Call expression");
             printNode(node, debug);
-            const result = transformCallExpression(node, visit, typeChecker, debug);
+            const result = transformCallExpression(
+              node,
+              visit,
+              typeChecker,
+              debug
+            );
             console.warn("Transformed to");
             printNode(result, debug);
             return result;
           } else {
             console.warn("Property access");
             printNode(node, debug);
-            const transformed = transformPropertyAccess(node as ts.PropertyAccessExpression, visit, debug);
+            const transformed = transformPropertyAccess(
+              node as ts.PropertyAccessExpression,
+              visit,
+              debug
+            );
 
-            if (transformed){
+            if (transformed) {
               console.warn("Transformed to");
               printNode(transformed, debug);
               return transformed;
-            }
-            else{
+            } else {
               console.warn("No transformation");
             }
           }
         }
       }
-      
+
       // Check for assignment
-      if (ts.isBinaryExpression(node) && 
-          node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
         const leftmostExp = findLeftmostExpression(node.left);
         const baseType = typeChecker.getTypeAtLocation(leftmostExp);
 
@@ -165,11 +175,46 @@ function createTransformer(
         }
       }
 
+      // Check for equality/non-equality/greater/less/greater-equal/less-equal
+      if (
+        ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.GreaterThanToken ||
+          node.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
+          node.operatorToken.kind === ts.SyntaxKind.GreaterThanEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken)
+      ) {
+        const leftmostExp = findLeftmostExpression(node.left);
+        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+        if (isAsyncMockType(baseType, typeChecker)) {
+          return transformComparison(
+            node,
+          visit,
+          typeChecker,
+            debug
+          );
+        }
+      }
+
       return ts.visitEachChild(node, visit, context);
     };
 
     return (sourceFile) => ts.visitNode(sourceFile, visit) as ts.SourceFile;
   };
+}
+
+function transformComparison(
+  node: ts.BinaryExpression,
+  visit: ts.Visitor,
+  typeChecker: ts.TypeChecker,
+  debug: boolean
+): ts.Node {
+  return node;
+  const transformedLeft = ts.visitNode(node.left, visit) as ts.Expression;
+  const transformedRight = ts.visitNode(node.right, visit) as ts.Expression;
+
+  return ts.factory.createBinaryExpression(transformedLeft, node.operatorToken, transformedRight);
 }
 
 // Helper functions
@@ -193,9 +238,12 @@ function transformCallExpression(
   console.log("Call expression");
   printNode(node, debug);
 
-  const visitedExpression = ts.visitNode(node.expression, visit) as ts.Expression;
+  const visitedExpression = ts.visitNode(
+    node.expression,
+    visit
+  ) as ts.Expression;
   // Transform each argument and await it if it's a property access on an AsyncMock
-  const transformedArguments = node.arguments.map(arg => {
+  const transformedArguments = node.arguments.map((arg) => {
     console.log("Argument");
     printNode(arg, debug);
     const visited = ts.visitNode(arg, visit) as ts.Expression;
@@ -231,7 +279,7 @@ function transformPropertyAccess(
   debug: boolean
 ): ts.Node | undefined {
   console.log("Property access");
-  
+
   const parent = node.parent;
   if (ts.isCallExpression(parent) && parent.expression === node) {
     return undefined;
@@ -346,7 +394,6 @@ async function createTypeChecker(
   const program = createProgram(compilerHost);
   return program.getTypeChecker();
 }
-
 
 function functionIsAsync(node: ts.FunctionLikeDeclaration): boolean {
   return !!node.modifiers?.some(

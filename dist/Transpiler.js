@@ -116,10 +116,30 @@ function createTransformer(typeChecker, debug) {
                     return transformAssignment(node, visit, debug);
                 }
             }
+            // Check for equality/non-equality/greater/less/greater-equal/less-equal
+            if (ts.isBinaryExpression(node) &&
+                (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+                    node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+                    node.operatorToken.kind === ts.SyntaxKind.GreaterThanToken ||
+                    node.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
+                    node.operatorToken.kind === ts.SyntaxKind.GreaterThanEqualsToken ||
+                    node.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken)) {
+                const leftmostExp = findLeftmostExpression(node.left);
+                const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+                if (isAsyncMockType(baseType, typeChecker)) {
+                    return transformComparison(node, visit, typeChecker, debug);
+                }
+            }
             return ts.visitEachChild(node, visit, context);
         };
         return (sourceFile) => ts.visitNode(sourceFile, visit);
     };
+}
+function transformComparison(node, visit, typeChecker, debug) {
+    return node;
+    const transformedLeft = ts.visitNode(node.left, visit);
+    const transformedRight = ts.visitNode(node.right, visit);
+    return ts.factory.createBinaryExpression(transformedLeft, node.operatorToken, transformedRight);
 }
 // Helper functions
 function findLeftmostExpression(node) {
@@ -135,7 +155,7 @@ function transformCallExpression(node, visit, typeChecker, debug) {
     printNode(node, debug);
     const visitedExpression = ts.visitNode(node.expression, visit);
     // Transform each argument and await it if it's a property access on an AsyncMock
-    const transformedArguments = node.arguments.map(arg => {
+    const transformedArguments = node.arguments.map((arg) => {
         console.log("Argument");
         printNode(arg, debug);
         const visited = ts.visitNode(arg, visit);
