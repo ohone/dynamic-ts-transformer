@@ -1,15 +1,18 @@
 import { transpileTypescript } from "./index.js";
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const i1 = `
+      return (async function() {
+        // Create container
+        const container = document.something.createElement('div');
+})`;
+
   const result = await transpileTypescript(
-    `
-    document.body.firstChild;
-    const a = document.body.firstChild;
-    document.body.insertBefore(document, document.body.firstChild);
-    `,
+    i1,
     "http://localhost:8080/dev.ts",
     ["window", "document"],
     true
   );
+
   console.log("--------------------------------");
   console.log(result);
 }
