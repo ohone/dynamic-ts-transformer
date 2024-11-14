@@ -154,58 +154,6 @@ function createTransformer(
   };
 
   return (context) => {
-    const visit: ts.Visitor = (node: ts.Node): ts.Node => {
-      printNode(node, debug);
-
-      // Check for property access or call expression
-      if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node);
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-
-        if (isAsyncMockType(baseType, typeChecker)) {
-          if (ts.isCallExpression(node)) {
-            printNode(node, debug);
-            return visitCallExpressionWithRuntimeCheck(
-              node,
-              visit,
-              typeChecker,
-              debug
-            );
-          } else {
-            return visitPropertyAccessWithRuntimeCheck(node, visit, debug);
-          }
-        }
-      }
-
-      // Check for assignment
-      if (isAssignmentExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node.left);
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-
-        if (isAsyncMockType(baseType, typeChecker)) {
-          return visitAssignmentWithRuntimeCheck(node, visit, debug);
-        }
-      }
-
-      // Check for equality/non-equality/greater/less/greater-equal/less-equal
-      if (isBinaryExpression(node)) {
-        return visitComparisonWithRuntimeCheck(node, visit, typeChecker, debug);
-      }
-
-      if (isFunctionLikeExpression(node)) {
-        return visitFunctionLike(
-          node,
-          visit,
-          typeChecker,
-          context,
-          onTransformed,
-          debug
-        );
-      }
-
-      return ts.visitEachChild(node, visit, context);
-    };
-
     return (sourceFile: ts.SourceFile) => {
       const firstPass = visitNode(
         sourceFile,
@@ -509,6 +457,21 @@ function visitNode(
       }
     }
 
+    if (ts.isForOfStatement(node)) {
+      console.error("for of statement", node);
+      printNode(node, true);
+      const result = ts.factory.createForOfStatement(
+        /* awaitModifier */ ts.factory.createToken(ts.SyntaxKind.AwaitKeyword),
+        node.initializer,
+        ts.visitNode(node.expression, visit) as ts.Expression,
+        ts.visitNode(node.statement, visit) as ts.Statement
+      );
+      printNode(node.expression, true);
+      console.error("for of statement result");
+      printNode(result, true);
+      return result;
+    }
+
     // Check for assignments
     if (isAssignmentExpression(node)) {
       const leftmostExp = findLeftmostExpression(node.left);
@@ -537,6 +500,10 @@ function visitNode(
         onTransformedFunction,
         debug
       );
+    }
+
+    if (ts.isSpreadElement(node)) {
+      return visitSpreadElement(node, visit, typeChecker, debug);
     }
 
     // Continue visiting other nodes
@@ -586,6 +553,11 @@ function isAsyncMockType(type: ts.Type, typeChecker: ts.TypeChecker): boolean {
   }
 
   return false;
+}
+
+function visitSpreadElement(node: ts.SpreadElement, visit: ts.Visitor, typeChecker: ts.TypeChecker, debug: boolean): ts.Node {
+  const transformedExpression = ts.visitNode(node.expression, visit) as ts.Expression;
+  return ts.factory.createSpreadElement(transformedExpression);
 }
 
 function couldBeAsyncMockType(
@@ -696,32 +668,35 @@ function visitCallExpressionWithRuntimeCheck(
 ): ts.Node {
   const factory = ts.factory;
 
+  const transformCall = (node: ts.CallExpression) => {
+    if (ts.isPropertyAccessExpression(node.expression)) {
+      const transformedBase = ts.visitNode(
+        node.expression.expression,
+        visit
+      ) as ts.Expression;
+
+      // Transform each argument, handling AsyncMock parameters
+      const transformedArguments = node.arguments.map((arg) => {
+        return visitArgument(arg, visit, typeChecker, debug);
+      });
+
+      return factory.createCallExpression(
+        factory.createPropertyAccessExpression(
+          transformedBase,
+          node.expression.name
+        ),
+        node.typeArguments,
+        transformedArguments
+      );
+    }
+    return ts.visitNode(node.expression, visit) as ts.Expression;
+  };
+
   // Transform the callee expression
-  const transformedExpression = ts.visitNode(
-    node.expression,
-    visit
-  ) as ts.Expression;
-
-  // Transform each argument, handling AsyncMock parameters
-  const transformedArguments = node.arguments.map((arg) => {
-    return visitArgument(arg, visit, typeChecker, debug);
-  });
-
-  const callExpression = factory.createCallExpression(
-    transformedExpression,
-    undefined,
-    transformedArguments
-  );
+  const transformedExpression = transformCall(node);
 
   // Create the AsyncMock path: await a.method(...transformedArguments)
-  const asyncCall = factory.createAwaitExpression(callExpression);
-
-  // Create the regular path: a.method(...transformedArguments)
-  const regularCall = factory.createCallExpression(
-    transformedExpression,
-    undefined,
-    transformedArguments
-  );
+  const asyncCall = factory.createAwaitExpression(transformedExpression);
 
   // Create the runtime check: a.isProxy ? await a.method(...args) : a.method(...args)
   const leftmostExp = findLeftmostExpression(node.expression);
@@ -736,7 +711,7 @@ function visitCallExpressionWithRuntimeCheck(
       undefined,
       asyncCall,
       undefined,
-      regularCall
+      transformedExpression
     )
   );
 }
@@ -1021,53 +996,25 @@ function visitComparison(
   const transformedLeftSide = ts.visitNode(node.left, visit) as ts.Expression;
   const transformedRightSide = ts.visitNode(node.right, visit) as ts.Expression;
 
-  // For definitely AsyncMock sides, use the original logic
-  if (isLeftAsyncMock && isRightAsyncMock) {
-    return ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedLeftSide, undefined, [
-        createObjectLiteral(transformedRightSide, [
-          { type: "type", value: "comparison" },
-          { type: "operator", value: node.operatorToken.kind.toString() },
-        ]),
-      ])
+  if (couldLeftBeAsyncMock && !couldRightBeAsyncMock) {
+    return createProxiedOneSideCompareCall(
+      transformedLeftSide,
+      node.right,
+      node,
+      node.operatorToken.kind
     );
   }
 
-  // Case 2: Right side is definitely AsyncMock
-  if (isRightAsyncMock) {
-    return ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedRightSide, undefined, [
-        createObjectLiteral(
-          transformedLeftSide, // Use transformed version in case it could be AsyncMock
-          [
-            { type: "type", value: "comparison" },
-            {
-              type: "operator",
-              value: getInvertedOperator(node.operatorToken.kind).toString(),
-            },
-          ]
-        ),
-      ])
+  if (!couldLeftBeAsyncMock && couldRightBeAsyncMock) {
+    return createProxiedOneSideCompareCall(
+      transformedRightSide,
+      node.left,
+      node,
+      getInvertedOperator(node.operatorToken.kind)
     );
   }
 
-  if (isLeftAsyncMock) {
-    // Case 3: Left side is definitely AsyncMock
-    return ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedLeftSide, undefined, [
-        createObjectLiteral(
-          transformedRightSide, // Use transformed version in case it could be AsyncMock
-          [
-            { type: "type", value: "comparison" },
-            { type: "operator", value: node.operatorToken.kind.toString() },
-          ]
-        ),
-      ])
-    );
-  }
-
-  // If either side could be AsyncMock, create nested ternary
-  if (couldLeftBeAsyncMock || couldRightBeAsyncMock) {
+  if (couldLeftBeAsyncMock && couldRightBeAsyncMock) {
     const leftIsProxyCheck = ts.factory.createPropertyAccessExpression(
       transformedLeftSide,
       "isProxy"
@@ -1077,135 +1024,48 @@ function visitComparison(
       "isProxy"
     );
 
-    // Create the four possible outcomes
-    const bothProxies = ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedLeftSide, undefined, [
-        createObjectLiteral(
-          ts.factory.createAwaitExpression(
-            ts.factory.createCallExpression(transformedRightSide, undefined, [])
-          ),
-          [
-            { type: "type", value: "comparison" },
-            { type: "operator", value: node.operatorToken.kind.toString() },
-          ]
-        ),
-      ])
-    );
-
-    const leftProxyOnly = ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedLeftSide, undefined, [
-        createObjectLiteral(transformedRightSide, [
-          { type: "type", value: "comparison" },
-          { type: "operator", value: node.operatorToken.kind.toString() },
-        ]),
-      ])
-    );
-
-    const rightProxyOnly = ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedRightSide, undefined, [
-        createObjectLiteral(transformedLeftSide, [
-          { type: "type", value: "comparison" },
-          {
-            type: "operator",
-            value: getInvertedOperator(node.operatorToken.kind).toString(),
-          },
-        ]),
-      ])
-    );
-
-    const noProxies = ts.factory.createBinaryExpression(
-      transformedLeftSide,
-      node.operatorToken,
-      transformedRightSide
-    );
-
-    // Nest the ternaries
     return ts.factory.createConditionalExpression(
       leftIsProxyCheck,
       ts.factory.createToken(ts.SyntaxKind.QuestionToken),
+      // left is proxy
       ts.factory.createConditionalExpression(
         rightIsProxyCheck,
         ts.factory.createToken(ts.SyntaxKind.QuestionToken),
-        bothProxies,
+        // both are proxies
+        createProxiedCompareCall(
+          transformedLeftSide,
+          ts.factory.createAwaitExpression(
+            ts.factory.createCallExpression(transformedRightSide, undefined, [])
+          ),
+          node.operatorToken.kind
+        ),
         ts.factory.createToken(ts.SyntaxKind.ColonToken),
-        leftProxyOnly
+        // only left is proxy
+        createProxiedCompareCall(
+          transformedLeftSide,
+          transformedRightSide,
+          node.operatorToken.kind
+        )
       ),
       ts.factory.createToken(ts.SyntaxKind.ColonToken),
+      // left is not proxy
       ts.factory.createConditionalExpression(
         rightIsProxyCheck,
         ts.factory.createToken(ts.SyntaxKind.QuestionToken),
-        rightProxyOnly,
-        ts.factory.createToken(ts.SyntaxKind.ColonToken),
-        noProxies
-      )
-    );
-  }
-
-  return node;
-}
-
-function visitComparison2(
-  node: ts.BinaryExpression,
-  visit: ts.Visitor,
-  typeChecker: ts.TypeChecker,
-  debug: boolean
-): ts.Node {
-  const leftType = typeChecker.getTypeAtLocation(node.left);
-  const rightType = typeChecker.getTypeAtLocation(node.right);
-
-  // Definite AsyncMock checks
-  const isLeftAsyncMock = isAsyncMockType(leftType, typeChecker);
-  const isRightAsyncMock = isAsyncMockType(rightType, typeChecker);
-
-  // Potential AsyncMock checks
-  const couldLeftBeAsyncMock = couldBeAsyncMockType(leftType, typeChecker);
-  const couldRightBeAsyncMock = couldBeAsyncMockType(rightType, typeChecker);
-
-  // Transform sides that could be AsyncMock
-  const transformedLeftSide = ts.visitNode(node.left, visit) as ts.Expression;
-
-  const transformedRightSide = ts.visitNode(node.right, visit) as ts.Expression;
-
-  // Case 4: Neither side is definitely AsyncMock
-  if (!isLeftAsyncMock && !isRightAsyncMock) {
-    // But if either side could be AsyncMock, return the transformed version
-    if (couldLeftBeAsyncMock || couldRightBeAsyncMock) {
-      return ts.factory.createBinaryExpression(
-        transformedLeftSide,
-        node.operatorToken,
-        transformedRightSide
-      );
-    }
-    return node;
-  }
-
-  // Case 1: Both sides are definitely AsyncMock
-  if (isLeftAsyncMock && isRightAsyncMock) {
-    return ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedLeftSide, undefined, [
-        createObjectLiteral(transformedRightSide, [
-          { type: "type", value: "comparison" },
-          { type: "operator", value: node.operatorToken.kind.toString() },
-        ]),
-      ])
-    );
-  }
-
-  // Case 2: Right side is definitely AsyncMock
-  if (isRightAsyncMock) {
-    return ts.factory.createAwaitExpression(
-      ts.factory.createCallExpression(transformedRightSide, undefined, [
-        createObjectLiteral(
-          transformedLeftSide, // Use transformed version in case it could be AsyncMock
-          [
-            { type: "type", value: "comparison" },
-            {
-              type: "operator",
-              value: getInvertedOperator(node.operatorToken.kind).toString(),
-            },
-          ]
+        // only right is proxy
+        createProxiedCompareCall(
+          transformedRightSide,
+          transformedLeftSide,
+          getInvertedOperator(node.operatorToken.kind)
         ),
-      ])
+        ts.factory.createToken(ts.SyntaxKind.ColonToken),
+        // neither is proxy
+        ts.factory.createBinaryExpression(
+          transformedLeftSide,
+          node.operatorToken,
+          transformedRightSide
+        )
+      )
     );
   }
 
@@ -1225,7 +1085,7 @@ function createMaybeProxyTypeLiteral(factory: ts.NodeFactory): ts.TypeNode {
 }
 
 // Helper function to invert comparison operators
-function getInvertedOperator(kind: ts.SyntaxKind): ts.SyntaxKind {
+function getInvertedOperator(kind: ts.BinaryOperator): ts.SyntaxKind {
   switch (kind) {
     case ts.SyntaxKind.GreaterThanToken:
       return ts.SyntaxKind.LessThanToken;
@@ -1254,6 +1114,42 @@ function findLeftmostExpression(node: ts.Node): ts.Expression {
   }
   return leftmostExp;
 }
+
+const createProxiedOneSideCompareCall = (
+  maybeProxyExpr: ts.Expression,
+  valueExpr: ts.Expression,
+  originalExpr: ts.Expression,
+  operator: ts.SyntaxKind
+) => {
+  const proxyCheck = ts.factory.createPropertyAccessExpression(
+    maybeProxyExpr,
+    "isProxy"
+  );
+
+  return ts.factory.createConditionalExpression(
+    proxyCheck,
+    ts.factory.createToken(ts.SyntaxKind.QuestionToken),
+    // left is proxy
+    createProxiedCompareCall(maybeProxyExpr, valueExpr, operator),
+    ts.factory.createToken(ts.SyntaxKind.ColonToken),
+    // left is not proxy
+    originalExpr
+  );
+};
+
+const createProxiedCompareCall = (
+  proxyExpr: ts.Expression,
+  valueExpr: ts.Expression,
+  operator: ts.SyntaxKind
+) => {
+  return ts.factory.createAwaitExpression(
+    ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(proxyExpr, "__compare"),
+      undefined,
+      [ts.factory.createStringLiteral(operator.toString()), valueExpr]
+    )
+  );
+};
 
 function createObjectLiteral(
   rightSideExpr: ts.Expression,

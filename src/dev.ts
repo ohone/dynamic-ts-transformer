@@ -1,12 +1,10 @@
 import { transpileTypescript } from "./index.js";
 if (import.meta.url === `file://${process.argv[1]}`) {
   const i1 = `
-      return (async function() {
-        // Create container
-        const isGOOD = document.something === document.something;
-        const isBad = a.something === document.something;
-        //const isBad2 = document.something === a.something;
-})`;
+  for (let a of [...document.attributes]){
+    console.log(a);
+  }
+`;
 
   const result = await transpileTypescript(
     i1,
