@@ -3,14 +3,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const i1 = `
       return (async function() {
         // Create container
-        const container = document.something.createElement('div');
+        const isGOOD = document.something === document.something;
+        const isBad = a.something === document.something;
+        //const isBad2 = document.something === a.something;
 })`;
 
   const result = await transpileTypescript(
     i1,
     "http://localhost:8080/dev.ts",
     ["window", "document"],
-    true
+    false
   );
 
   console.log("--------------------------------");

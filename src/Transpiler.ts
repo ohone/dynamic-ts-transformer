@@ -147,6 +147,12 @@ function createTransformer(
   typeChecker: ts.TypeChecker,
   debug: boolean
 ): ts.TransformerFactory<ts.SourceFile> {
+  // FIFO queue of functions that have been transformed
+  const transformedFunctions: ts.Node[] = [];
+  const onTransformed: (node: ts.Node) => void = (node) => {
+    transformedFunctions.push(node);
+  };
+
   return (context) => {
     const visit: ts.Visitor = (node: ts.Node): ts.Node => {
       printNode(node, debug);
@@ -178,22 +184,175 @@ function createTransformer(
 
       // Check for equality/non-equality/greater/less/greater-equal/less-equal
       if (isBinaryExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node.left);
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-        if (isAsyncMockType(baseType, typeChecker)) {
-          return visitComparison(node, visit, debug);
-        }
+        return visitComparison(node, visit, typeChecker, debug);
       }
 
       if (isFunctionLikeExpression(node)) {
-        return visitFunctionLike(node, visit, typeChecker, context, debug);
+        return visitFunctionLike(
+          node,
+          visit,
+          typeChecker,
+          context,
+          onTransformed,
+          debug
+        );
       }
 
       return ts.visitEachChild(node, visit, context);
     };
 
-    return (sourceFile) => ts.visitNode(sourceFile, visit) as ts.SourceFile;
+    return (sourceFile: ts.SourceFile) => {
+      const firstPass = visitNode(sourceFile, typeChecker, context, onTransformed, debug) as ts.SourceFile;
+      const secondPass = awaitTransformedAsyncFunctions(transformedFunctions, firstPass, typeChecker, context);
+      return secondPass as ts.SourceFile;
+    };
   };
+}
+
+function awaitTransformedAsyncFunctions(transformedFunctions: ts.Node[], node: ts.Node, typeChecker: ts.TypeChecker, context: ts.TransformationContext) {
+  const secondPassVisit: ts.Visitor = (node: ts.Node): ts.Node => {
+    if (ts.isCallExpression(node)) {
+      const signature = typeChecker.getResolvedSignature(node);
+      if (signature) {
+        const declaration = signature.declaration;
+        if (declaration && transformedFunctions.includes(declaration)) {
+          return ts.factory.createAwaitExpression(
+            ts.visitEachChild(node, secondPassVisit, context)
+          );
+        }
+      }
+    }
+    return ts.visitEachChild(node, secondPassVisit, context);
+  };
+
+  return ts.visitNode(node, secondPassVisit);
+}
+
+function visitFunctionDeclaration(
+  node: ts.FunctionDeclaration,
+  visit: ts.Visitor,
+  modifiers: readonly ts.Modifier[],
+  parameters: ts.ParameterDeclaration[],
+  typeChecker: ts.TypeChecker,
+  context: ts.TransformationContext,
+  onTransformedFunction: (node: ts.Node) => void,
+  debug: boolean
+) {
+  const factory = context.factory;
+  const intermediateDeclaration = factory.updateFunctionDeclaration(
+    node,
+    modifiers,
+    node.asteriskToken,
+    node.name,
+    node.typeParameters,
+    parameters,
+    node.type,
+    node.body
+  );
+  const newBody = visitFunctionLikeBody(
+    intermediateDeclaration,
+    visit,
+    typeChecker,
+    context,
+    onTransformedFunction,
+    debug
+  );
+  return factory.updateFunctionDeclaration(
+    node,
+    modifiers,
+    node.asteriskToken,
+    node.name,
+    node.typeParameters,
+    node.parameters,
+    node.type,
+    newBody
+  );
+}
+
+function visitFunctionExpression(
+  node: ts.FunctionExpression,
+  visit: ts.Visitor,
+  modifiers: readonly ts.Modifier[],
+  parameters: ts.ParameterDeclaration[],
+  typeChecker: ts.TypeChecker,
+  context: ts.TransformationContext,
+  onTransformedFunction: (node: ts.Node) => void,
+  debug: boolean
+) {
+  const factory = context.factory;
+  const intermediateExpression = factory.updateFunctionExpression(
+    node,
+    modifiers,
+    node.asteriskToken,
+    node.name,
+    node.typeParameters,
+    parameters,
+    node.type,
+    node.body
+  );
+  const newBody = visitFunctionLikeBody(
+    intermediateExpression,
+    visit,
+    typeChecker,
+    context,
+    onTransformedFunction,
+    debug
+  );
+  if (!newBody) {
+    return node;
+  }
+  return factory.updateFunctionExpression(
+    node,
+    modifiers,
+    node.asteriskToken,
+    node.name,
+    node.typeParameters,
+    node.parameters,
+    node.type,
+    newBody
+  );
+}
+
+function visitArrowFunction(
+  node: ts.ArrowFunction,
+  visit: ts.Visitor,
+  modifiers: readonly ts.Modifier[],
+  parameters: ts.ParameterDeclaration[],
+  typeChecker: ts.TypeChecker,
+  onTransformedFunction: (node: ts.Node) => void,
+  factory: ts.NodeFactory,
+  context: ts.TransformationContext,
+  debug: boolean
+) {
+  const intermediateExpression = factory.updateArrowFunction(
+    node,
+    modifiers,
+    node.typeParameters,
+    parameters,
+    node.type,
+    node.equalsGreaterThanToken,
+    node.body
+  );
+  const newBody = visitFunctionLikeBody(
+    intermediateExpression,
+    visit,
+    typeChecker,
+    context,
+    onTransformedFunction,
+    debug
+  );
+  if (!newBody) {
+    return node;
+  }
+  return factory.updateArrowFunction(
+    node,
+    modifiers,
+    node.typeParameters,
+    node.parameters,
+    node.type,
+    node.equalsGreaterThanToken,
+    newBody
+  );
 }
 
 function visitFunctionLike(
@@ -201,6 +360,7 @@ function visitFunctionLike(
   visit: ts.Visitor,
   typeChecker: ts.TypeChecker,
   context: ts.TransformationContext,
+  onTransformedFunction: (node: ts.Node) => void,
   debug: boolean
 ): ts.Node {
   const factory = context.factory;
@@ -220,92 +380,38 @@ function visitFunctionLike(
   const parameters = visitFunctionParameterDeclarations(node, typeChecker);
   // Update the function with new modifiers and body
   if (ts.isFunctionDeclaration(node)) {
-    const intermediateDeclaration = factory.updateFunctionDeclaration(
+    return visitFunctionDeclaration(
       node,
-      modifiers,
-      node.asteriskToken,
-      node.name,
-      node.typeParameters,
-      parameters,
-      node.type,
-      node.body
-    );
-    const newBody = visitFunctionLikeBody(
-      intermediateDeclaration,
       visit,
+      modifiers,
+      parameters,
       typeChecker,
       context,
+      onTransformedFunction,
       debug
-    );
-    return factory.updateFunctionDeclaration(
-      node,
-      modifiers,
-      node.asteriskToken,
-      node.name,
-      node.typeParameters,
-      node.parameters,
-      node.type,
-      newBody
     );
   } else if (ts.isFunctionExpression(node)) {
-    const intermediateExpression = factory.updateFunctionExpression(
+    return visitFunctionExpression(
       node,
-      modifiers,
-      node.asteriskToken,
-      node.name,
-      node.typeParameters,
-      parameters,
-      node.type,
-      node.body
-    );
-    const newBody = visitFunctionLikeBody(
-      intermediateExpression,
       visit,
+      modifiers,
+      parameters,
       typeChecker,
       context,
+      onTransformedFunction,
       debug
-    );
-    if (!newBody) {
-      return node;
-    }
-    return factory.updateFunctionExpression(
-      node,
-      modifiers,
-      node.asteriskToken,
-      node.name,
-      node.typeParameters,
-      node.parameters,
-      node.type,
-      newBody
     );
   } else if (ts.isArrowFunction(node)) {
-    const intermediateExpression = factory.updateArrowFunction(
+    return visitArrowFunction(
       node,
-      modifiers,
-      node.typeParameters,
-      parameters,
-      node.type,
-      node.equalsGreaterThanToken,
-      node.body
-    );
-    const newBody = visitFunctionLikeBody(
-      intermediateExpression,
       visit,
+      modifiers,
+      parameters,
       typeChecker,
+      onTransformedFunction,
+      factory,
       context,
       debug
-    );
-    if (!newBody) {
-      return node;
-    }
-    return factory.updateArrowFunction(
-      node,
-      modifiers,
-      node.typeParameters,
-      node.parameters,
-      node.type,
-      node.equalsGreaterThanToken,
-      newBody
     );
   } else if (ts.isMethodDeclaration(node)) {
     const intermediateExpression = factory.updateMethodDeclaration(
@@ -324,6 +430,7 @@ function visitFunctionLike(
       visit,
       typeChecker,
       context,
+      onTransformedFunction,
       debug
     );
     if (!newBody) {
@@ -346,85 +453,76 @@ function visitFunctionLike(
   }
 }
 
-function transformNode(
+function visitNode(
   parentNode: ts.Node,
-  visit: ts.Visitor,
   typeChecker: ts.TypeChecker,
   context: ts.TransformationContext,
+  onTransformedFunction: (node: ts.Node) => void,
   debug: boolean
 ): ts.Node {
-  console.log("Transforming node");
   printNode(parentNode, debug);
-  // Recursively visit nodes within the function body
-  return ts.visitEachChild(
-    parentNode,
-    (node) => {
-      // Check for property access expressions
-      // Check for call expressions
-      if (ts.isCallExpression(node) || ts.isPropertyAccessExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node.expression);
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) {
+      const leftmostExp = findLeftmostExpression(node.expression);
 
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+      const baseType = typeChecker.getTypeAtLocation(leftmostExp);
 
-        if (isAsyncMockType(baseType, typeChecker)) {
-          if (ts.isCallExpression(node)) {
-            return visitCallExpression(node, visit, typeChecker, debug);
-          } else {
-            return visitPropertyAccess(node, visit, debug);
-          }
-        }
-        if (couldBeAsyncMockType(baseType, typeChecker)) {
-          if (ts.isCallExpression(node)) {
-            return transformCallExpressionWithRuntimeCheck(
-              node,
-              visit,
-              typeChecker,
-              debug
-            );
-          } else {
-            return visitPropertyAccessWithRuntimeCheck(node, visit, debug);
-          }
+      if (isAsyncMockType(baseType, typeChecker)) {
+        if (ts.isCallExpression(node)) {
+          return visitCallExpression(node, visit, typeChecker, debug);
+        } else {
+          return visitPropertyAccess(node, visit, debug);
         }
       }
-
-      // Check for assignments
-      if (isAssignmentExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node.left);
-
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-
-        if (isAsyncMockType(baseType, typeChecker)) {
-          return visitAssignment(node, visit, debug);
-        }
-
-        if (couldBeAsyncMockType(baseType, typeChecker)) {
-          return visitAssignmentWithRuntimeCheck(node, visit, debug);
+      if (couldBeAsyncMockType(baseType, typeChecker)) {
+        if (ts.isCallExpression(node)) {
+          return visitCallExpressionWithRuntimeCheck(
+            node,
+            visit,
+            typeChecker,
+            debug
+          );
+        } else {
+          return visitPropertyAccessWithRuntimeCheck(node, visit, debug);
         }
       }
+    }
 
-      if (isBinaryExpression(node)) {
-        const leftmostExp = findLeftmostExpression(node.left);
-        const baseType = typeChecker.getTypeAtLocation(leftmostExp);
-        if (
-          isAsyncMockType(baseType, typeChecker) ||
-          couldBeAsyncMockType(baseType, typeChecker)
-        ) {
-          return visitComparison(node, visit, debug);
-        }
+    // Check for assignments
+    if (isAssignmentExpression(node)) {
+      const leftmostExp = findLeftmostExpression(node.left);
+
+      const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+
+      if (isAsyncMockType(baseType, typeChecker)) {
+        return visitAssignment(node, visit, debug);
       }
 
-      if (isFunctionLikeExpression(node)) {
-        return visitFunctionLike(node, visit, typeChecker, context, debug);
+      if (couldBeAsyncMockType(baseType, typeChecker)) {
+        return visitAssignmentWithRuntimeCheck(node, visit, debug);
       }
+    }
 
-      // Continue visiting other nodes
-      return transformNode(node, visit, typeChecker, context, debug);
-    },
-    undefined
-  );
+    if (isBinaryExpression(node)) {
+      return visitComparisonWithRuntimeCheck(node, visit, typeChecker, debug);
+    }
+
+    if (isFunctionLikeExpression(node)) {
+      return visitFunctionLike(
+        node,
+        visit,
+        typeChecker,
+        context,
+        onTransformedFunction,
+        debug
+      );
+    }
+
+    // Continue visiting other nodes
+    return ts.visitEachChild(node, visit, context);
+  };
+  return ts.visitNode(parentNode, visit);
 }
-
-// type checking functions
 
 function isAsyncMockType(type: ts.Type, typeChecker: ts.TypeChecker): boolean {
   if (!type) return false;
@@ -502,6 +600,7 @@ function isBinaryExpression(node: ts.Node): node is ts.BinaryExpression {
   return (
     ts.isBinaryExpression(node) &&
     (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+      node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
       node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
       node.operatorToken.kind === ts.SyntaxKind.GreaterThanToken ||
       node.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
@@ -510,7 +609,9 @@ function isBinaryExpression(node: ts.Node): node is ts.BinaryExpression {
   );
 }
 
-function isFunctionLikeExpression(node: ts.Node): node is ts.FunctionLikeDeclaration {
+function isFunctionLikeExpression(
+  node: ts.Node
+): node is ts.FunctionLikeDeclaration {
   return (
     ts.isArrowFunction(node) ||
     ts.isFunctionDeclaration(node) ||
@@ -521,7 +622,7 @@ function isFunctionLikeExpression(node: ts.Node): node is ts.FunctionLikeDeclara
 
 // transformation functions
 
-function transformArgument(
+function visitArgument(
   arg: ts.Expression,
   visit: ts.Visitor,
   typeChecker: ts.TypeChecker,
@@ -549,7 +650,7 @@ function transformArgument(
         return visitCallExpression(node, visit, typeChecker, debug);
       }
       if (couldBeAsyncMockType(baseType, typeChecker)) {
-        return transformCallExpressionWithRuntimeCheck(
+        return visitCallExpressionWithRuntimeCheck(
           node,
           visit,
           typeChecker,
@@ -560,13 +661,13 @@ function transformArgument(
     return ts.visitEachChild(
       node,
       (child) =>
-        transformArgument(child as ts.Expression, visit, typeChecker, debug),
+        visitArgument(child as ts.Expression, visit, typeChecker, debug),
       undefined
     );
   }) as ts.Expression;
 }
 
-function transformCallExpressionWithRuntimeCheck(
+function visitCallExpressionWithRuntimeCheck(
   node: ts.CallExpression,
   visit: ts.Visitor,
   typeChecker: ts.TypeChecker,
@@ -582,7 +683,7 @@ function transformCallExpressionWithRuntimeCheck(
 
   // Transform each argument, handling AsyncMock parameters
   const transformedArguments = node.arguments.map((arg) => {
-    return transformArgument(arg, visit, typeChecker, debug);
+    return visitArgument(arg, visit, typeChecker, debug);
   });
 
   const callExpression = factory.createCallExpression(
@@ -619,21 +720,9 @@ function transformCallExpressionWithRuntimeCheck(
   );
 }
 
-function createMaybeProxyTypeLiteral(factory: ts.NodeFactory): ts.TypeNode {
-  return factory.createUnionTypeNode([
-    // Reference to AsyncMock type
-    factory.createTypeReferenceNode(
-      factory.createIdentifier("AsyncMock"),
-      undefined
-    ),
-    // Any type
-    factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword),
-  ]);
-}
-
 function visitFunctionParameterDeclarations(
   node: ts.FunctionLikeDeclaration,
-  typeChecker: ts.TypeChecker,
+  typeChecker: ts.TypeChecker
 ): ts.ParameterDeclaration[] {
   const factory = ts.factory;
   const parameters = [...node.parameters];
@@ -756,6 +845,7 @@ function visitFunctionLikeBody(
   visit: ts.Visitor,
   typeChecker: ts.TypeChecker,
   context: ts.TransformationContext,
+  onTransformedFunction: (node: ts.Node) => void,
   debug: boolean
 ): ts.Block | undefined {
   const factory = context.factory;
@@ -776,7 +866,13 @@ function visitFunctionLikeBody(
 
   // Transform the function body
   const newStatements = functionBody.statements.map((statement) =>
-    transformNode(statement, visit, typeChecker, context, debug)
+    visitNode(
+      statement,
+      typeChecker,
+      context,
+      onTransformedFunction,
+      debug
+    )
   );
 
   return factory.createBlock(newStatements as ts.Statement[], true);
@@ -874,42 +970,120 @@ function visitAssignment(
   return ts.factory.createAwaitExpression(newCallExpr);
 }
 
+function visitComparisonWithRuntimeCheck(
+  node: ts.BinaryExpression,
+  visit: ts.Visitor,
+  typeChecker: ts.TypeChecker,
+  debug: boolean
+): ts.Node {
+  return visitComparison(node, visit, typeChecker, debug);
+}
+
 function visitComparison(
   node: ts.BinaryExpression,
   visit: ts.Visitor,
+  typeChecker: ts.TypeChecker,
   debug: boolean
 ): ts.Node {
-  const transformedLeftSide = ts.visitNode(node.left, visit) as ts.Expression;
+  const leftType = typeChecker.getTypeAtLocation(node.left);
+  const rightType = typeChecker.getTypeAtLocation(node.right);
+  
+  const isLeftAsyncMock = isAsyncMockType(leftType, typeChecker);
+  const isRightAsyncMock = isAsyncMockType(rightType, typeChecker);
 
-  const transformedRightSide = ts.visitNode(node.right, visit) as ts.Expression;
-
-  // TODO: handle when one is a proxy and the other is not
-  if (
-    transformedLeftSide === node.left &&
-    transformedRightSide === node.right
-  ) {
+  // Case 4: Neither side is AsyncMock, return original node
+  if (!isLeftAsyncMock && !isRightAsyncMock) {
     return node;
   }
 
-  const innerLeftSide = (transformedLeftSide as ts.AwaitExpression).expression;
-  try {
-    const methodCall = (innerLeftSide as ts.AwaitExpression)
-      .expression as ts.CallExpression;
+  const transformedLeftSide = ts.visitNode(node.left, visit) as ts.Expression;
+  const transformedRightSide = ts.visitNode(node.right, visit) as ts.Expression;
 
-    const newCallExpr = ts.factory.createCallExpression(
-      methodCall,
-      methodCall.typeArguments,
-      [
-        createObjectLiteral(transformedRightSide, [
-          { type: "type", value: "comparison" },
-          { type: "operator", value: node.operatorToken.kind.toString() },
-        ]),
-      ]
+  // Case 1: Both sides are AsyncMock
+  if (isLeftAsyncMock && isRightAsyncMock) {
+    return ts.factory.createAwaitExpression(
+      ts.factory.createCallExpression(
+        transformedLeftSide,
+        undefined,
+        [
+          createObjectLiteral(
+            transformedRightSide,
+            [
+              { type: "type", value: "comparison" },
+              { type: "operator", value: node.operatorToken.kind.toString() }
+            ]
+          )
+        ]
+      )
     );
+  }
 
-    return ts.factory.createAwaitExpression(newCallExpr);
-  } catch (e) {
-    throw e;
+  // Case 2: Right side is AsyncMock
+  if (isRightAsyncMock) {
+    return ts.factory.createAwaitExpression(
+      ts.factory.createCallExpression(
+        transformedRightSide,
+        undefined,
+        [
+          createObjectLiteral(
+            node.left,
+            [
+              { type: "type", value: "comparison" },
+              { type: "operator", value: getInvertedOperator(node.operatorToken.kind).toString() }
+            ]
+          )
+        ]
+      )
+    );
+  }
+
+  // Case 3: Left side is AsyncMock
+  return ts.factory.createAwaitExpression(
+    ts.factory.createCallExpression(
+      transformedLeftSide,
+      undefined,
+      [
+        createObjectLiteral(
+          node.right,
+          [
+            { type: "type", value: "comparison" },
+            { type: "operator", value: node.operatorToken.kind.toString() }
+          ]
+        )
+      ]
+    )
+  );
+}
+
+function createMaybeProxyTypeLiteral(factory: ts.NodeFactory): ts.TypeNode {
+  return factory.createUnionTypeNode([
+    // Reference to AsyncMock type
+    factory.createTypeReferenceNode(
+      factory.createIdentifier("AsyncMock"),
+      undefined
+    ),
+    // Any type
+    factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword),
+  ]);
+}
+
+// Helper function to invert comparison operators
+function getInvertedOperator(kind: ts.SyntaxKind): ts.SyntaxKind {
+  switch (kind) {
+    case ts.SyntaxKind.GreaterThanToken:
+      return ts.SyntaxKind.LessThanToken;
+    case ts.SyntaxKind.GreaterThanEqualsToken:
+      return ts.SyntaxKind.LessThanEqualsToken;
+    case ts.SyntaxKind.LessThanToken:
+      return ts.SyntaxKind.GreaterThanToken;
+    case ts.SyntaxKind.LessThanEqualsToken:
+      return ts.SyntaxKind.GreaterThanEqualsToken;
+    // These don't need to be inverted
+    case ts.SyntaxKind.EqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsToken:
+      return kind;
+    default:
+      return kind;
   }
 }
 
