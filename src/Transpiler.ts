@@ -5,7 +5,7 @@ const rootFileName = "input.ts";
 
 const runtimeTypes: Record<
   string,
-  (names: string[], debug: boolean) => string
+  (asyncProxyNames: string[], nonProxyNames: string[], debug: boolean) => string
 > = {
   "node_modules/my-runtime-types.d.ts": getTypeDefinitions,
 };
@@ -13,12 +13,14 @@ const runtimeTypes: Record<
 export async function transpileTypescript(
   codeString: string,
   sourceUrl?: string | undefined,
-  globalMockNames: string[] = [],
+  globalProxyNames: string[] = [],
+  globalNonProxyNames: string[] = [],
   debug: boolean = false
 ) {
   const typeChecker = await createTypeChecker(
     codeString,
-    globalMockNames,
+    globalProxyNames,
+    globalNonProxyNames,
     debug
   );
   const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
@@ -45,12 +47,14 @@ export async function transpileTypescript(
 
 async function createTypeChecker(
   sourceCode: string,
-  globalObjectNames: string[],
+  globalProxyNames: string[],
+  globalNonProxyNames: string[],
   debug: boolean
 ): Promise<ts.TypeChecker> {
   const compilerHost = await createInMemoryCompilerHost(
     sourceCode,
-    globalObjectNames,
+    globalProxyNames,
+    globalNonProxyNames,
     debug
   );
   const program = createProgram(compilerHost);
@@ -72,7 +76,8 @@ function createProgram(compilerHost: ts.CompilerHost) {
 
 async function createInMemoryCompilerHost(
   sourceCode: string,
-  globalMockNames: string[],
+  globalProxyNames: string[],
+  globalNonProxyNames: string[],
   debug: boolean = false
 ): Promise<ts.CompilerHost> {
   const sourceFile = ts.createSourceFile(
@@ -91,7 +96,7 @@ async function createInMemoryCompilerHost(
         debug && console.log("Loading lib file:", fileName);
         return ts.createSourceFile(
           fileName,
-          runtimeTypes[fileName](globalMockNames, debug),
+          runtimeTypes[fileName](globalProxyNames, globalNonProxyNames, debug),
           languageVersion
         );
       }
@@ -123,7 +128,7 @@ async function createInMemoryCompilerHost(
       }
       if (runtimeTypes[fileName] !== undefined) {
         debug && console.log("Reading lib file:", fileName);
-        return runtimeTypes[fileName](globalMockNames, debug);
+        return runtimeTypes[fileName](globalProxyNames, globalNonProxyNames, debug);
       }
       debug && console.warn("[readFile]File does not exist:", fileName);
       return undefined;
@@ -515,6 +520,10 @@ function visitNode(
 function isAsyncMockType(type: ts.Type, typeChecker: ts.TypeChecker): boolean {
   if (!type) return false;
   // Check for error types
+  if (type.symbol?.name === "NonProxy") {
+    return false;
+  }
+  
   if (type.flags & ts.TypeFlags.Any || type.flags & ts.TypeFlags.Unknown) {
     return false;
   }
