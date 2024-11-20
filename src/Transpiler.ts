@@ -463,17 +463,12 @@ function visitNode(
     }
 
     if (ts.isForOfStatement(node)) {
-      console.error("for of statement", node);
-      printNode(node, true);
       const result = ts.factory.createForOfStatement(
         /* awaitModifier */ ts.factory.createToken(ts.SyntaxKind.AwaitKeyword),
         node.initializer,
         ts.visitNode(node.expression, visit) as ts.Expression,
         ts.visitNode(node.statement, visit) as ts.Statement
       );
-      printNode(node.expression, true);
-      console.error("for of statement result");
-      printNode(result, true);
       return result;
     }
 
