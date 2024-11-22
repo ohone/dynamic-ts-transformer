@@ -475,11 +475,9 @@ const createProxyCheckIfBlocks = (
   options: visitorOptions
 ) => {
   const expressions = walkMemberExpressions(node);
-  const blocks: ts.Statement[] = [];
   const retVal: { check: ts.PropertyAccessChain; expr: ts.Expression }[] = [];
 
   for (let i = 0; i < expressions.length; i++) {
-    console.log(i);
     const proxyCheckExpression = expressions[i];
     const expressionToProxify = expressions[expressions.length - 1];
     const nonProxySide = i === 0 ? undefined : expressions[i - 1];
@@ -498,8 +496,6 @@ const createProxyCheckIfBlocks = (
         ]).transformed[0]
       : expressionToProxify;
 
-    printNode(readyToProxify, true);
-
     const transformedExpr = visitNode(
       readyToProxify,
       typeChecker,
@@ -509,8 +505,6 @@ const createProxyCheckIfBlocks = (
       { ...options, unknownsAreAsyncMock: true }
     ) as ts.Expression;
 
-    printNode(transformedExpr, true);
-
     const check = ts.factory.createPropertyAccessChain(
       proxyCheckExpression,
       undefined,
@@ -518,17 +512,6 @@ const createProxyCheckIfBlocks = (
     );
 
     retVal.push({ check, expr: transformedExpr });
-
-    const ifBlock = ts.factory.createIfStatement(
-      check,
-      ts.factory.createBlock(
-        [ts.factory.createExpressionStatement(transformedExpr)],
-        true
-      )
-    );
-
-    printNode(ifBlock, true);
-    blocks.push(ifBlock);
   }
 
   return retVal;
@@ -542,7 +525,7 @@ function visitAssignmentWithRuntimeCheck(
   debug: boolean,
   options: visitorOptions
 ) {
-  const retVal = createProxyCheckIfBlocks(
+  const checksAndStatements = createProxyCheckIfBlocks(
     node.left,
     typeChecker,
     context,
@@ -560,12 +543,31 @@ function visitAssignmentWithRuntimeCheck(
     options
   ) as ts.Expression;
 
-  const newRetVal = retVal.map((val) => {
+  const removeNonProxyCasts = (node: ts.Node) => {
+    const handleAsExpression = (node: ts.AsExpression) => {
+      const typeRef = node.type as ts.TypeReferenceNode;
+      if (ts.isIdentifier(typeRef.typeName)) {
+        const typeName = typeRef.typeName.escapedText;
+        if (typeName === "NonProxy") {
+          return node.expression;
+        }
+      }
+    };
+  
+    if (ts.isAsExpression(node)) {
+      return handleAsExpression(node);
+    }
+    return ts.visitEachChild(node, removeNonProxyCasts, context);
+  };
+
+  const newRetVal = checksAndStatements.map((val) => {
     const callExpression = (val.expr as ts.AwaitExpression)
       .expression as ts.CallExpression;
+
+    const sanitizedCallExpression = ts.visitNode(callExpression, removeNonProxyCasts) as ts.CallExpression;
     // create new call expression with same everything but new args
     const newCallExpression = ts.factory.createCallExpression(
-      callExpression.expression,
+      sanitizedCallExpression.expression,
       undefined,
       [
         createObjectLiteral(transformedRightSide, [
@@ -576,27 +578,20 @@ function visitAssignmentWithRuntimeCheck(
 
     const check = val.check;
 
-    return ts.factory.createIfStatement(
-      check,
-      ts.factory.createBlock(
-        [
-          ts.factory.createExpressionStatement(
-            ts.factory.createAwaitExpression(newCallExpression)
-          ),
-        ],
-        true
-      )
-    );
+    return { check, expression: ts.factory.createAwaitExpression(newCallExpression) };
   });
 
-  const vanillaStatement = ts.factory.createExpressionStatement(node);
+  const ternary = newRetVal.reverse().reduce((acc, curr) => {
+    return ts.factory.createConditionalExpression(
+      curr.check,
+      undefined,
+      curr.expression,
+      undefined,
+      acc
+    );
+  }, node as ts.Expression);
 
-  const resultBlock = ts.factory.createBlock(
-    [...newRetVal, vanillaStatement],
-    true
-  );
-  printNode(resultBlock, true);
-  return resultBlock;
+  return ts.factory.createParenthesizedExpression(ternary);
 }
 
 type visitorOptions = {
@@ -612,8 +607,8 @@ function visitNode(
   debug: boolean,
   options: visitorOptions = {}
 ): ts.Node {
-  printNode(parentNode, debug);
   const visit = (node: ts.Node) => {
+    printNode(node, true);
     if (isExplicitlyNonProxyNode(node)) {
       return node;
     }
@@ -731,7 +726,10 @@ function isExplicitlyNonProxyNode(node: ts.Node | undefined): boolean {
   if (!node) return false;
   const handleAsExpression = (node: ts.AsExpression) => {
     const typeRef = node.type as ts.TypeReferenceNode;
-    if (ts.isIdentifier(typeRef.typeName)) {
+    if (!typeRef?.typeName){
+      return false;
+    }
+    if (ts.isIdentifier(typeRef?.typeName)) {
       const typeName = typeRef.typeName.escapedText;
       return typeName === "NonProxy";
     }
