@@ -235,7 +235,7 @@ function visitFunctionDeclaration(
     onTransformedFunction,
     debug
   );
-  return factory.updateFunctionDeclaration(
+  const res = factory.updateFunctionDeclaration(
     node,
     modifiers,
     node.asteriskToken,
@@ -245,6 +245,8 @@ function visitFunctionDeclaration(
     node.type,
     newBody
   );
+
+  return res;
 }
 
 function visitFunctionExpression(
@@ -553,7 +555,7 @@ function visitAssignmentWithRuntimeCheck(
         }
       }
     };
-  
+
     if (ts.isAsExpression(node)) {
       return handleAsExpression(node);
     }
@@ -561,10 +563,14 @@ function visitAssignmentWithRuntimeCheck(
   };
 
   const newRetVal = checksAndStatements.map((val) => {
-    const callExpression = (val.expr as ts.AwaitExpression)
-      .expression as ts.CallExpression;
+    const callExpression = typeof ts.isAwaitExpression(val.expr)
+      ? ((val.expr as ts.AwaitExpression).expression as ts.CallExpression)
+      : val.expr;
 
-    const sanitizedCallExpression = ts.visitNode(callExpression, removeNonProxyCasts) as ts.CallExpression;
+    const sanitizedCallExpression = ts.visitNode(
+      callExpression,
+      removeNonProxyCasts
+    ) as ts.CallExpression;
     // create new call expression with same everything but new args
     const newCallExpression = ts.factory.createCallExpression(
       sanitizedCallExpression.expression,
@@ -578,7 +584,10 @@ function visitAssignmentWithRuntimeCheck(
 
     const check = val.check;
 
-    return { check, expression: ts.factory.createAwaitExpression(newCallExpression) };
+    return {
+      check,
+      expression: ts.factory.createAwaitExpression(newCallExpression),
+    };
   });
 
   const ternary = newRetVal.reverse().reduce((acc, curr) => {
@@ -655,7 +664,10 @@ function visitNode(
         throw new Error("Unexpected node type in visitNode");
       }
 
-      return node;
+      // IIFE
+      if (baseType.symbol?.name === "__function") {
+        return ts.visitEachChild(node, visit, context);
+      }
     }
 
     if (ts.isForOfStatement(node)) {
@@ -701,7 +713,7 @@ function visitNode(
     }
 
     if (isFunctionLikeExpression(node)) {
-      return visitFunctionLike(
+      const rest = visitFunctionLike(
         node,
         visit,
         typeChecker,
@@ -710,6 +722,8 @@ function visitNode(
         debug,
         options
       );
+      printNode(rest, true);
+      return rest;
     }
 
     if (ts.isSpreadElement(node)) {
@@ -717,16 +731,20 @@ function visitNode(
     }
 
     // Continue visiting other nodes
-    return ts.visitEachChild(node, visit, context);
+    const res = ts.visitEachChild(node, visit, context);
+    printNode(res, true);
+    return res;
   };
-  return ts.visitNode(parentNode, visit);
+  const res = ts.visitNode(parentNode, visit);
+  printNode(res, true);
+  return res;
 }
 
 function isExplicitlyNonProxyNode(node: ts.Node | undefined): boolean {
   if (!node) return false;
   const handleAsExpression = (node: ts.AsExpression) => {
     const typeRef = node.type as ts.TypeReferenceNode;
-    if (!typeRef?.typeName){
+    if (!typeRef?.typeName) {
       return false;
     }
     if (ts.isIdentifier(typeRef?.typeName)) {
@@ -1001,9 +1019,10 @@ function proxyWrapNode(
     ts.factory.createConditionalExpression(
       condition,
       undefined,
-      proxyExpression,
+      nonProxyExpression,
       undefined,
-      nonProxyExpression
+      proxyExpression,
+
     )
   );
 }
