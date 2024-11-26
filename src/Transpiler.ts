@@ -512,7 +512,7 @@ const createProxyCheckIfBlocks = (
       undefined,
       "IsProxy"
     );
-
+    
     retVal.push({ check, expr: transformedExpr });
   }
 
@@ -619,6 +619,23 @@ function visitNode(
   const visit = (node: ts.Node) => {
     if (isExplicitlyNonProxyNode(node)) {
       return node;
+    }
+
+    if (ts.isArrayLiteralExpression(node)){
+      if (node.elements.length === 1){
+        const firstElement = node.elements[0];
+        if (ts.isSpreadElement(firstElement)){
+          const asyncCall = visitNode(firstElement, typeChecker, context, onTransformedFunction, debug, options);
+          return asyncCall;
+        }
+      }
+    }
+
+    if (ts.isSpreadElement(node)){
+      // return awaited function call
+      // `[...a]` becomes `await asyncIterate(a)`
+      const childrenVisited = ts.visitEachChild(node, visit, context) as ts.SpreadElement;
+      return ts.factory.createAwaitExpression(ts.factory.createCallExpression(ts.factory.createIdentifier("asyncIterate"), undefined, [childrenVisited.expression]));
     }
 
     if (
