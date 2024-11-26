@@ -27,7 +27,7 @@ export async function transpileTypescript(
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
       target: ts.ScriptTarget.ES2023,
-      inlineSourceMap: true, //Disabled for now, as the maps were mangled, happy to use JS debugging for now
+      inlineSourceMap: true, 
       inlineSources: true,
       sourceMap: true,
     },
@@ -617,7 +617,6 @@ function visitNode(
   options: visitorOptions = {}
 ): ts.Node {
   const visit = (node: ts.Node) => {
-    printNode(node, true);
     if (isExplicitlyNonProxyNode(node)) {
       return node;
     }
@@ -722,7 +721,6 @@ function visitNode(
         debug,
         options
       );
-      printNode(rest, true);
       return rest;
     }
 
@@ -732,11 +730,9 @@ function visitNode(
 
     // Continue visiting other nodes
     const res = ts.visitEachChild(node, visit, context);
-    printNode(res, true);
     return res;
   };
   const res = ts.visitNode(parentNode, visit);
-  printNode(res, true);
   return res;
 }
 
@@ -1015,14 +1011,15 @@ function proxyWrapNode(
     "isProxy"
   );
 
-  return ts.factory.createParenthesizedExpression(
-    ts.factory.createConditionalExpression(
-      condition,
-      undefined,
-      nonProxyExpression,
-      undefined,
-      proxyExpression,
-
+  return ts.factory.createAwaitExpression(
+    ts.factory.createParenthesizedExpression(
+      ts.factory.createConditionalExpression(
+        condition,
+        undefined,
+        nonProxyExpression,
+        undefined,
+        proxyExpression
+      )
     )
   );
 }
@@ -1090,7 +1087,7 @@ function visitPropertyAccessWithRuntimeCheck(
     propertyName
   );
 
-  return proxyWrapNode(node, asyncCall, regularAccess);
+  return proxyWrapNode(node.expression, asyncCall, regularAccess);
 }
 
 function visitFunctionLikeBody(

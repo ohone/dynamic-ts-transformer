@@ -10,7 +10,7 @@ export async function transpileTypescript(codeString, sourceUrl, globalProxyName
         compilerOptions: {
             module: ts.ModuleKind.ES2022,
             target: ts.ScriptTarget.ES2023,
-            inlineSourceMap: true, //Disabled for now, as the maps were mangled, happy to use JS debugging for now
+            inlineSourceMap: true,
             inlineSources: true,
             sourceMap: true,
         },
@@ -263,7 +263,6 @@ function visitAssignmentWithRuntimeCheck(node, typeChecker, context, onTransform
 }
 function visitNode(parentNode, typeChecker, context, onTransformedFunction, debug, options = {}) {
     const visit = (node) => {
-        printNode(node, true);
         if (isExplicitlyNonProxyNode(node)) {
             return node;
         }
@@ -319,7 +318,6 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
         }
         if (isFunctionLikeExpression(node)) {
             const rest = visitFunctionLike(node, visit, typeChecker, context, onTransformedFunction, debug, options);
-            printNode(rest, true);
             return rest;
         }
         if (ts.isSpreadElement(node)) {
@@ -327,11 +325,9 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
         }
         // Continue visiting other nodes
         const res = ts.visitEachChild(node, visit, context);
-        printNode(res, true);
         return res;
     };
     const res = ts.visitNode(parentNode, visit);
-    printNode(res, true);
     return res;
 }
 function isExplicitlyNonProxyNode(node) {
@@ -498,7 +494,7 @@ function visitCallExpressionWithRuntimeCheck(node, visit, typeChecker, debug, op
 }
 function proxyWrapNode(nodeToCheck, nonProxyExpression, proxyExpression) {
     const condition = ts.factory.createPropertyAccessExpression(nodeToCheck, "isProxy");
-    return ts.factory.createParenthesizedExpression(ts.factory.createConditionalExpression(condition, undefined, nonProxyExpression, undefined, proxyExpression));
+    return ts.factory.createAwaitExpression(ts.factory.createParenthesizedExpression(ts.factory.createConditionalExpression(condition, undefined, nonProxyExpression, undefined, proxyExpression)));
 }
 function visitFunctionParameterDeclarations(node, typeChecker, options) {
     const factory = ts.factory;
@@ -524,7 +520,7 @@ function visitPropertyAccessWithRuntimeCheck(node, visit, debug) {
     const asyncCall = factory.createAwaitExpression(factory.createCallExpression(factory.createElementAccessExpression(transformedExpression, propertyName), undefined, []));
     // Create the regular path: b.parent
     const regularAccess = factory.createElementAccessExpression(transformedExpression, propertyName);
-    return proxyWrapNode(node, asyncCall, regularAccess);
+    return proxyWrapNode(node.expression, asyncCall, regularAccess);
 }
 function visitFunctionLikeBody(funcNode, visit, typeChecker, context, onTransformedFunction, debug) {
     const factory = context.factory;
