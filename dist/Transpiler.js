@@ -266,11 +266,44 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
         if (isExplicitlyNonProxyNode(node)) {
             return node;
         }
+        // to capture calls to `new Function`
+        if (ts.isNewExpression(node)) {
+            if (ts.isIdentifier(node.expression) &&
+                node.expression.text === "Function") {
+                const transformedArgs = node.arguments
+                    ? node.arguments.map((arg) => visitNode(arg, typeChecker, context, onTransformedFunction, debug, options))
+                    : [];
+                // create a call expression to `__newFunction` with the transformed args
+                const callExpression = ts.factory.createCallExpression(ts.factory.createIdentifier("__newFunction"), undefined, transformedArgs);
+                return callExpression;
+            }
+        }
+        if (ts.isArrayLiteralExpression(node)) {
+            if (node.elements.length === 1) {
+                const firstElement = node.elements[0];
+                if (ts.isSpreadElement(firstElement)) {
+                    const asyncCall = visitNode(firstElement, typeChecker, context, onTransformedFunction, debug, options);
+                    return asyncCall;
+                }
+            }
+        }
+        if (ts.isSpreadElement(node)) {
+            // return awaited function call
+            // `[...a]` becomes `await asyncIterate(a)`
+            const childrenVisited = ts.visitEachChild(node, visit, context);
+            return ts.factory.createAwaitExpression(ts.factory.createCallExpression(ts.factory.createIdentifier("asyncIterate"), undefined, [childrenVisited.expression]));
+        }
         if (ts.isPropertyAccessExpression(node) ||
             ts.isCallExpression(node) ||
             ts.isElementAccessExpression(node)) {
             const leftmostExp = findLeftmostExpression(node.expression);
             const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+            const isFunctionNewExpression = ts.isNewExpression(leftmostExp) &&
+                ts.isIdentifier(leftmostExp.expression) &&
+                leftmostExp.expression.text === "Function";
+            if (isFunctionNewExpression) {
+                return ts.visitEachChild(node, visit, context);
+            }
             if (isAsyncMockType(node, baseType, typeChecker, options)) {
                 if (ts.isCallExpression(node)) {
                     return visitCallExpression(node, visit, typeChecker, debug, options);
@@ -282,7 +315,7 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
                     return visitElementAccessExpression(node, visit, typeChecker, debug, options);
                 }
             }
-            if (couldBeAsyncMockType(node, baseType, typeChecker, options)) {
+            if (!isFunctionNewExpression && couldBeAsyncMockType(node, baseType, typeChecker, options)) {
                 if (ts.isCallExpression(node)) {
                     return visitCallExpressionWithRuntimeCheck(node, visit, typeChecker, debug, options);
                 }
@@ -301,6 +334,9 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
             const result = ts.factory.createForOfStatement(
             /* awaitModifier */ ts.factory.createToken(ts.SyntaxKind.AwaitKeyword), node.initializer, ts.visitNode(node.expression, visit), ts.visitNode(node.statement, visit));
             return result;
+        }
+        if (ts.isVariableDeclaration(node)) {
+            return ts.visitEachChild(node, visit, context);
         }
         // Check for assignments
         if (isAssignmentExpression(node)) {
