@@ -641,10 +641,12 @@ function visitNode(
             )
           : [];
         // create a call expression to `__newFunction` with the transformed args
-        const callExpression = ts.factory.createCallExpression(
-          ts.factory.createIdentifier("__newFunction"),
-          undefined,
-          transformedArgs
+        const callExpression = ts.factory.createAwaitExpression(
+          ts.factory.createCallExpression(
+            ts.factory.createIdentifier("__newFunction"),
+            undefined,
+            transformedArgs
+          )
         );
         return callExpression;
       }
@@ -716,7 +718,10 @@ function visitNode(
           );
         }
       }
-      if (!isFunctionNewExpression && couldBeAsyncMockType(node, baseType, typeChecker, options)) {
+      if (
+        !isFunctionNewExpression &&
+        couldBeAsyncMockType(node, baseType, typeChecker, options)
+      ) {
         if (ts.isCallExpression(node)) {
           return visitCallExpressionWithRuntimeCheck(
             node,
