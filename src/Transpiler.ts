@@ -27,7 +27,7 @@ export async function transpileTypescript(
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
       target: ts.ScriptTarget.ES2023,
-      inlineSourceMap: true, 
+      inlineSourceMap: true,
       inlineSources: true,
       sourceMap: true,
     },
@@ -512,7 +512,7 @@ const createProxyCheckIfBlocks = (
       undefined,
       "IsProxy"
     );
-    
+
     retVal.push({ check, expr: transformedExpr });
   }
 
@@ -621,21 +621,67 @@ function visitNode(
       return node;
     }
 
-    if (ts.isArrayLiteralExpression(node)){
-      if (node.elements.length === 1){
+    // to capture calls to `new Function`
+    if (ts.isNewExpression(node)) {
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "Function"
+      ) {
+        const transformedArgs = node.arguments
+          ? node.arguments.map(
+              (arg) =>
+                visitNode(
+                  arg,
+                  typeChecker,
+                  context,
+                  onTransformedFunction,
+                  debug,
+                  options
+                ) as ts.Expression
+            )
+          : [];
+        // create a call expression to `__newFunction` with the transformed args
+        const callExpression = ts.factory.createCallExpression(
+          ts.factory.createIdentifier("__newFunction"),
+          undefined,
+          transformedArgs
+        );
+        return callExpression;
+      }
+    }
+
+    if (ts.isArrayLiteralExpression(node)) {
+      if (node.elements.length === 1) {
         const firstElement = node.elements[0];
-        if (ts.isSpreadElement(firstElement)){
-          const asyncCall = visitNode(firstElement, typeChecker, context, onTransformedFunction, debug, options);
+        if (ts.isSpreadElement(firstElement)) {
+          const asyncCall = visitNode(
+            firstElement,
+            typeChecker,
+            context,
+            onTransformedFunction,
+            debug,
+            options
+          );
           return asyncCall;
         }
       }
     }
 
-    if (ts.isSpreadElement(node)){
+    if (ts.isSpreadElement(node)) {
       // return awaited function call
       // `[...a]` becomes `await asyncIterate(a)`
-      const childrenVisited = ts.visitEachChild(node, visit, context) as ts.SpreadElement;
-      return ts.factory.createAwaitExpression(ts.factory.createCallExpression(ts.factory.createIdentifier("asyncIterate"), undefined, [childrenVisited.expression]));
+      const childrenVisited = ts.visitEachChild(
+        node,
+        visit,
+        context
+      ) as ts.SpreadElement;
+      return ts.factory.createAwaitExpression(
+        ts.factory.createCallExpression(
+          ts.factory.createIdentifier("asyncIterate"),
+          undefined,
+          [childrenVisited.expression]
+        )
+      );
     }
 
     if (
@@ -696,6 +742,9 @@ function visitNode(
       return result;
     }
 
+    if (ts.isVariableDeclaration(node)) {
+      return ts.visitEachChild(node, visit, context);
+    }
     // Check for assignments
     if (isAssignmentExpression(node)) {
       const leftmostExp = findLeftmostExpression(node.left);
