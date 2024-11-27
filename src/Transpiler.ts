@@ -692,6 +692,14 @@ function visitNode(
       const leftmostExp = findLeftmostExpression(node.expression);
 
       const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+      const isFunctionNewExpression =
+        ts.isNewExpression(leftmostExp) &&
+        ts.isIdentifier(leftmostExp.expression) &&
+        leftmostExp.expression.text === "Function";
+
+      if (isFunctionNewExpression) {
+        return ts.visitEachChild(node, visit, context);
+      }
 
       if (isAsyncMockType(node, baseType, typeChecker, options)) {
         if (ts.isCallExpression(node)) {
@@ -708,7 +716,7 @@ function visitNode(
           );
         }
       }
-      if (couldBeAsyncMockType(node, baseType, typeChecker, options)) {
+      if (!isFunctionNewExpression && couldBeAsyncMockType(node, baseType, typeChecker, options)) {
         if (ts.isCallExpression(node)) {
           return visitCallExpressionWithRuntimeCheck(
             node,
