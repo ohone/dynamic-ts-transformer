@@ -1,2 +1,2 @@
-export declare function transpileTypescript(codeString: string, sourceUrl?: string | undefined, globalProxyNames?: string[], globalNonProxyNames?: string[], debug?: boolean): Promise<string>;
+export declare function transpileTypescript(codeString: string, sourceUrl?: string | undefined, globalProxyNames?: string[], globalNonProxyNames?: string[], debug?: boolean, sourceMap?: boolean): Promise<string>;
 //# sourceMappingURL=Transpiler.d.ts.map

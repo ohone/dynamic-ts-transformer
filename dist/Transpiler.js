@@ -4,15 +4,16 @@ const rootFileName = "input.ts";
 const runtimeTypes = {
     "node_modules/my-runtime-types.d.ts": getTypeDefinitions,
 };
-export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false) {
-    const typeChecker = await createTypeChecker(codeString, globalProxyNames, globalNonProxyNames, debug);
+export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
+    console.log("Transpiling code", codeString);
+    const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
         compilerOptions: {
             module: ts.ModuleKind.ES2022,
             target: ts.ScriptTarget.ES2023,
-            inlineSourceMap: true,
-            inlineSources: true,
-            sourceMap: true,
+            inlineSourceMap: sourceMap,
+            inlineSources: sourceMap,
+            sourceMap: sourceMap,
         },
         fileName: sourceUrl,
         transformers: {
@@ -274,7 +275,7 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
                     ? node.arguments.map((arg) => visitNode(arg, typeChecker, context, onTransformedFunction, debug, options))
                     : [];
                 // create a call expression to `__newFunction` with the transformed args
-                const callExpression = ts.factory.createCallExpression(ts.factory.createIdentifier("__newFunction"), undefined, transformedArgs);
+                const callExpression = ts.factory.createAwaitExpression(ts.factory.createCallExpression(ts.factory.createIdentifier("__newFunction"), undefined, transformedArgs));
                 return callExpression;
             }
         }
@@ -297,13 +298,16 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
             ts.isCallExpression(node) ||
             ts.isElementAccessExpression(node)) {
             const leftmostExp = findLeftmostExpression(node.expression);
-            const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+            // handle `new Function` explicitly
             const isFunctionNewExpression = ts.isNewExpression(leftmostExp) &&
                 ts.isIdentifier(leftmostExp.expression) &&
                 leftmostExp.expression.text === "Function";
             if (isFunctionNewExpression) {
                 return ts.visitEachChild(node, visit, context);
             }
+            const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+            // handle direct function calls e.g. alert('hello') rather than something.alert('hello')
+            const isDirectFunctionCall = leftmostExp === node.expression;
             if (isAsyncMockType(node, baseType, typeChecker, options)) {
                 if (ts.isCallExpression(node)) {
                     return visitCallExpression(node, visit, typeChecker, debug, options);
@@ -315,7 +319,8 @@ function visitNode(parentNode, typeChecker, context, onTransformedFunction, debu
                     return visitElementAccessExpression(node, visit, typeChecker, debug, options);
                 }
             }
-            if (!isFunctionNewExpression && couldBeAsyncMockType(node, baseType, typeChecker, options)) {
+            if (!isFunctionNewExpression &&
+                couldBeAsyncMockType(node, baseType, typeChecker, options)) {
                 if (ts.isCallExpression(node)) {
                     return visitCallExpressionWithRuntimeCheck(node, visit, typeChecker, debug, options);
                 }
@@ -526,6 +531,9 @@ function visitCallExpressionWithRuntimeCheck(node, visit, typeChecker, debug, op
     const asyncCall = factory.createAwaitExpression(transformedExpression);
     // Create the runtime check: a.isProxy ? await a.method(...args) : a.method(...args)
     const leftmostExp = findLeftmostExpression(node.expression);
+    if (leftmostExp === node.expression) {
+        return proxyWrapNode(leftmostExp, factory.createAwaitExpression(transformedExpression), node);
+    }
     return proxyWrapNode(leftmostExp, asyncCall, transformedExpression);
 }
 function proxyWrapNode(nodeToCheck, nonProxyExpression, proxyExpression) {

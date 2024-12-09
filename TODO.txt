@@ -1,0 +1,11 @@
+- extract comparer statement outside of for block
+    - for (let i = 0; i < something.length; i++) // (`i < something.length` needs to be async)
+    - const length = something.length // .. rest of for loop
+- transform stuff inside string interpolation
+- distinguish between method call and property access at compiled code - can't rely on disambiguation on the other createSandboxDynamicCodeServer
+    - e.g. if (window.jQuery && window.jQuery.ui)
+        - window.jQuery is a function - the above is testing for presence - we don't want to call the function
+        - calling the function causes the subsequent `.ui` call to fail
+- type annotations on function args prevent proxy checks 
+    `async function something(history: string[]){ history[0] }`
+    - history could be a proxy

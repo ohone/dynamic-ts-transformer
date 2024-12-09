@@ -15,21 +15,23 @@ export async function transpileTypescript(
   sourceUrl?: string | undefined,
   globalProxyNames: string[] = [],
   globalNonProxyNames: string[] = [],
-  debug: boolean = false
+  debug: boolean = false,
+  sourceMap: boolean = true
 ) {
+  console.log("Transpiling code", codeString)
   const typeChecker = await createTypeChecker(
     codeString,
     globalProxyNames,
-    globalNonProxyNames,
+    [...globalNonProxyNames, "JSON"],
     debug
   );
   const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
       target: ts.ScriptTarget.ES2023,
-      inlineSourceMap: true,
-      inlineSources: true,
-      sourceMap: true,
+      inlineSourceMap: sourceMap,
+      inlineSources: sourceMap,
+      sourceMap: sourceMap,
     },
     fileName: sourceUrl,
     transformers: {
@@ -689,11 +691,11 @@ function visitNode(
     if (
       ts.isPropertyAccessExpression(node) ||
       ts.isCallExpression(node) ||
-      ts.isElementAccessExpression(node)
+      ts.isElementAccessExpression(node) 
     ) {
       const leftmostExp = findLeftmostExpression(node.expression);
 
-      const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+      // handle `new Function` explicitly
       const isFunctionNewExpression =
         ts.isNewExpression(leftmostExp) &&
         ts.isIdentifier(leftmostExp.expression) &&
@@ -702,6 +704,11 @@ function visitNode(
       if (isFunctionNewExpression) {
         return ts.visitEachChild(node, visit, context);
       }
+
+      const baseType = typeChecker.getTypeAtLocation(leftmostExp);
+
+      // handle direct function calls e.g. alert('hello') rather than something.alert('hello')
+      const isDirectFunctionCall = leftmostExp === node.expression;
 
       if (isAsyncMockType(node, baseType, typeChecker, options)) {
         if (ts.isCallExpression(node)) {
@@ -1065,6 +1072,7 @@ function visitCallExpressionWithRuntimeCheck(
         transformedArguments
       );
     }
+    
     return ts.visitNode(node.expression, visit) as ts.Expression;
   };
 
@@ -1076,7 +1084,9 @@ function visitCallExpressionWithRuntimeCheck(
 
   // Create the runtime check: a.isProxy ? await a.method(...args) : a.method(...args)
   const leftmostExp = findLeftmostExpression(node.expression);
-
+  if (leftmostExp === node.expression) {
+    return proxyWrapNode(leftmostExp, factory.createAwaitExpression(transformedExpression), node);
+  }
   return proxyWrapNode(leftmostExp, asyncCall, transformedExpression);
 }
 
