@@ -5,7 +5,6 @@ const runtimeTypes = {
     "node_modules/my-runtime-types.d.ts": getTypeDefinitions,
 };
 export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
-    console.log("Transpiling code", codeString);
     const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
         compilerOptions: {
