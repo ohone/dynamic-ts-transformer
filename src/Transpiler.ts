@@ -18,7 +18,6 @@ export async function transpileTypescript(
   debug: boolean = false,
   sourceMap: boolean = true
 ) {
-  console.log("Transpiling code", codeString)
   const typeChecker = await createTypeChecker(
     codeString,
     globalProxyNames,
