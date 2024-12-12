@@ -221,9 +221,13 @@ const createProxyCheckIfBlocks = (node, typeChecker, context, onTransformedFunct
     return retVal;
 };
 function visitAssignmentWithRuntimeCheck(node, typeChecker, context, onTransformedFunction, debug, options) {
-    printNode(node, true);
     const checksAndStatements = createProxyCheckIfBlocks(node.left, typeChecker, context, onTransformedFunction, debug, options);
     const transformedRightSide = visitNode(node.right, typeChecker, context, onTransformedFunction, debug, options);
+    // e.g. resultMap = {};
+    // don't transform the above - we're reassigning a var;
+    if (ts.isIdentifier(node.left)) {
+        return node;
+    }
     const removeNonProxyCasts = (node) => {
         const handleAsExpression = (node) => {
             const typeRef = node.type;
@@ -239,9 +243,6 @@ function visitAssignmentWithRuntimeCheck(node, typeChecker, context, onTransform
         }
         return ts.visitEachChild(node, removeNonProxyCasts, context);
     };
-    if (checksAndStatements.length === 1) {
-        return node;
-    }
     const newRetVal = checksAndStatements.map((val) => {
         const callExpression = ts.isAwaitExpression(val.expr)
             ? val.expr.expression
