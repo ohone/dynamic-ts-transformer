@@ -546,6 +546,12 @@ function visitAssignmentWithRuntimeCheck(
     options
   ) as ts.Expression;
 
+  // e.g. resultMap = {};
+  // don't transform the above - we're reassigning a var;
+  if (ts.isIdentifier(node.left)) {
+    return node;
+  }
+
   const removeNonProxyCasts = (node: ts.Node) => {
     const handleAsExpression = (node: ts.AsExpression) => {
       const typeRef = node.type as ts.TypeReferenceNode;
@@ -564,7 +570,7 @@ function visitAssignmentWithRuntimeCheck(
   };
 
   const newRetVal = checksAndStatements.map((val) => {
-    const callExpression = typeof ts.isAwaitExpression(val.expr)
+    const callExpression = ts.isAwaitExpression(val.expr)
       ? ((val.expr as ts.AwaitExpression).expression as ts.CallExpression)
       : val.expr;
 
@@ -690,7 +696,7 @@ function visitNode(
     if (
       ts.isPropertyAccessExpression(node) ||
       ts.isCallExpression(node) ||
-      ts.isElementAccessExpression(node) 
+      ts.isElementAccessExpression(node)
     ) {
       const leftmostExp = findLeftmostExpression(node.expression);
 
@@ -1071,7 +1077,7 @@ function visitCallExpressionWithRuntimeCheck(
         transformedArguments
       );
     }
-    
+
     return ts.visitNode(node.expression, visit) as ts.Expression;
   };
 
@@ -1084,7 +1090,11 @@ function visitCallExpressionWithRuntimeCheck(
   // Create the runtime check: a.isProxy ? await a.method(...args) : a.method(...args)
   const leftmostExp = findLeftmostExpression(node.expression);
   if (leftmostExp === node.expression) {
-    return proxyWrapNode(leftmostExp, factory.createAwaitExpression(transformedExpression), node);
+    return proxyWrapNode(
+      leftmostExp,
+      factory.createAwaitExpression(transformedExpression),
+      node
+    );
   }
   return proxyWrapNode(leftmostExp, asyncCall, transformedExpression);
 }
