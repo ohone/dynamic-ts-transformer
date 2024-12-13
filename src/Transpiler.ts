@@ -508,11 +508,7 @@ const createProxyCheckIfBlocks = (
       { ...options, unknownsAreAsyncMock: true }
     ) as ts.Expression;
 
-    const check = ts.factory.createPropertyAccessChain(
-      proxyCheckExpression,
-      undefined,
-      "IsProxy"
-    );
+    const check = createProxyCheck(proxyCheckExpression);
 
     retVal.push({ check, expr: transformedExpr });
   }
@@ -1104,10 +1100,7 @@ function proxyWrapNode(
   nonProxyExpression: ts.Expression,
   proxyExpression: ts.Expression
 ) {
-  const condition = ts.factory.createPropertyAccessExpression(
-    nodeToCheck,
-    "isProxy"
-  );
+  const condition = createProxyCheck(nodeToCheck);
 
   return ts.factory.createAwaitExpression(
     ts.factory.createParenthesizedExpression(
@@ -1426,14 +1419,8 @@ function visitComparison(
   }
 
   if (couldLeftBeAsyncMock && couldRightBeAsyncMock) {
-    const leftIsProxyCheck = ts.factory.createPropertyAccessExpression(
-      transformedLeftSide,
-      "isProxy"
-    );
-    const rightIsProxyCheck = ts.factory.createPropertyAccessExpression(
-      transformedRightSide,
-      "isProxy"
-    );
+    const leftIsProxyCheck = createProxyCheck(transformedLeftSide);
+    const rightIsProxyCheck = createProxyCheck(transformedRightSide);
 
     return ts.factory.createConditionalExpression(
       leftIsProxyCheck,
@@ -1533,10 +1520,7 @@ const createProxiedOneSideCompareCall = (
   originalExpr: ts.Expression,
   operator: ts.SyntaxKind
 ) => {
-  const proxyCheck = ts.factory.createPropertyAccessExpression(
-    maybeProxyExpr,
-    "isProxy"
-  );
+  const proxyCheck = createProxyCheck(maybeProxyExpr);
 
   return ts.factory.createConditionalExpression(
     proxyCheck,
@@ -1583,4 +1567,12 @@ function createObjectLiteral(
     ],
     true
   ); // true for multiline formatting
+}
+
+function createProxyCheck(expr: ts.Expression): ts.PropertyAccessChain {
+  return ts.factory.createPropertyAccessChain(
+    expr,
+    ts.factory.createToken(ts.SyntaxKind.QuestionDotToken),
+    "isProxy"
+  );
 }

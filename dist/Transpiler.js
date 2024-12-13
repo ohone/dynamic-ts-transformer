@@ -215,7 +215,7 @@ const createProxyCheckIfBlocks = (node, typeChecker, context, onTransformedFunct
             ]).transformed[0]
             : expressionToProxify;
         const transformedExpr = visitNode(readyToProxify, typeChecker, context, onTransformedFunction, debug, { ...options, unknownsAreAsyncMock: true });
-        const check = ts.factory.createPropertyAccessChain(proxyCheckExpression, undefined, "IsProxy");
+        const check = createProxyCheck(proxyCheckExpression);
         retVal.push({ check, expr: transformedExpr });
     }
     return retVal;
@@ -541,7 +541,7 @@ function visitCallExpressionWithRuntimeCheck(node, visit, typeChecker, debug, op
     return proxyWrapNode(leftmostExp, asyncCall, transformedExpression);
 }
 function proxyWrapNode(nodeToCheck, nonProxyExpression, proxyExpression) {
-    const condition = ts.factory.createPropertyAccessExpression(nodeToCheck, "isProxy");
+    const condition = createProxyCheck(nodeToCheck);
     return ts.factory.createAwaitExpression(ts.factory.createParenthesizedExpression(ts.factory.createConditionalExpression(condition, undefined, nonProxyExpression, undefined, proxyExpression)));
 }
 function visitFunctionParameterDeclarations(node, typeChecker, options) {
@@ -675,8 +675,8 @@ function visitComparison(node, visit, typeChecker, debug, options) {
         return createProxiedOneSideCompareCall(transformedRightSide, node.left, node, getInvertedOperator(node.operatorToken.kind));
     }
     if (couldLeftBeAsyncMock && couldRightBeAsyncMock) {
-        const leftIsProxyCheck = ts.factory.createPropertyAccessExpression(transformedLeftSide, "isProxy");
-        const rightIsProxyCheck = ts.factory.createPropertyAccessExpression(transformedRightSide, "isProxy");
+        const leftIsProxyCheck = createProxyCheck(transformedLeftSide);
+        const rightIsProxyCheck = createProxyCheck(transformedRightSide);
         return ts.factory.createConditionalExpression(leftIsProxyCheck, ts.factory.createToken(ts.SyntaxKind.QuestionToken), 
         // left is proxy
         ts.factory.createConditionalExpression(rightIsProxyCheck, ts.factory.createToken(ts.SyntaxKind.QuestionToken), 
@@ -730,7 +730,7 @@ function findLeftmostExpression(node) {
     return leftmostExp;
 }
 const createProxiedOneSideCompareCall = (maybeProxyExpr, valueExpr, originalExpr, operator) => {
-    const proxyCheck = ts.factory.createPropertyAccessExpression(maybeProxyExpr, "isProxy");
+    const proxyCheck = createProxyCheck(maybeProxyExpr);
     return ts.factory.createConditionalExpression(proxyCheck, ts.factory.createToken(ts.SyntaxKind.QuestionToken), 
     // left is proxy
     createProxiedCompareCall(maybeProxyExpr, valueExpr, operator), ts.factory.createToken(ts.SyntaxKind.ColonToken), 
@@ -746,5 +746,8 @@ function createObjectLiteral(rightSideExpr, extraProps) {
         // Create the 'value' property with the expression
         ts.factory.createPropertyAssignment(ts.factory.createStringLiteral("value"), rightSideExpr),
     ], true); // true for multiline formatting
+}
+function createProxyCheck(expr) {
+    return ts.factory.createPropertyAccessChain(expr, ts.factory.createToken(ts.SyntaxKind.QuestionDotToken), "isProxy");
 }
 //# sourceMappingURL=Transpiler.js.map
