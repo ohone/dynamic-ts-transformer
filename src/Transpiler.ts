@@ -45,16 +45,6 @@ function createTransformer(
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context: ts.TransformationContext) => {
     const { factory } = context;
-    const visitedFunctions: ts.Node[] = [];
-    const onFunctionVisited = (node: ts.Node) => {
-      visitedFunctions.push(node);
-    }
-
-    function makeFunctionsAsync(node: ts.Node){
-      if (ts.isFunctionLike(node)){
-        onFunctionVisited(node);
-      }
-    }
 
     function createProxyTernary(
       maybeProxyExpression: ts.Expression,
@@ -75,9 +65,9 @@ function createTransformer(
       return parenthesizedAwaitExpression;
     }
 
-    function visitExpression(node: ts.Expression): ts.Expression {
+    function visitExpression(node: ts.Expression, onFunctionVisited: (node: ts.Node) => void): ts.Expression {
       if (ts.isCallExpression(node)) {
-        const transformedCallee = visitExpression(node.expression);
+        const transformedCallee = visitExpression(node.expression, onFunctionVisited);
         const wrappedCallee =
           ts.factory.createParenthesizedExpression(transformedCallee);
 
@@ -115,7 +105,7 @@ function createTransformer(
       }
 
       if (ts.isPropertyAccessExpression(node)) {
-        const transformedLeft = visitExpression(node.expression);
+        const transformedLeft = visitExpression(node.expression, onFunctionVisited);
         const proxyCall = factory.createAwaitExpression(
           factory.createElementAccessExpression(
             transformedLeft,
@@ -135,7 +125,7 @@ function createTransformer(
       }
 
       if (ts.isElementAccessExpression(node)) {
-        const transformedLeft = visitExpression(node.expression);
+        const transformedLeft = visitExpression(node.expression, onFunctionVisited);
         const proxyCall = factory.createAwaitExpression(
           factory.createElementAccessExpression(
             transformedLeft,
@@ -170,7 +160,7 @@ function createTransformer(
           : node.left.argumentExpression.getText();
 
         // Transform the right-hand side in case it involves proxies:
-        const transformedRight = visitExpression(right);
+        const transformedRight = visitExpression(right, onFunctionVisited);
 
         // Now we must get the object on which to call setProp.
         // For `myProxy.foo.bar = value`, `parentExpr` = `myProxy.foo`.
@@ -178,7 +168,7 @@ function createTransformer(
 
         // Transform that parent to be fully awaited:
         // For `myProxy.foo.bar`, transform `myProxy.foo` into `await myProxy.foo`.
-        const transformedParent = visitExpression(parentExpr);
+        const transformedParent = visitExpression(parentExpr, onFunctionVisited);
 
         // Now we create: await (transformedParent.setProp("propertyName", transformedRight))
         const setPropCall = factory.createCallExpression(
@@ -220,7 +210,7 @@ function createTransformer(
 
     function visitNode(node: ts.Node, onFunctionVisited: (node: ts.Node) => void): ts.Node {
       if (ts.isExpression(node)) {
-        const newExpression = visitExpression(node);
+        const newExpression = visitExpression(node, onFunctionVisited);
         if (newExpression !== node) {
           return newExpression;
         }
@@ -228,7 +218,7 @@ function createTransformer(
 
       // Handle Variable Declarations (e.g. const a = myProxy.foo.bar;)
       if (ts.isVariableDeclaration(node) && node.initializer) {
-        const newInit = visitExpression(node.initializer);
+        const newInit = visitExpression(node.initializer, onFunctionVisited);
         if (newInit !== node.initializer) {
           return factory.updateVariableDeclaration(
             node,
@@ -319,9 +309,11 @@ function createTransformer(
      */
 
     return (sourceFile: ts.SourceFile) => {
-      ts.visitNode(sourceFile, (node) => visitFunctions(node));
-
-      return ts.visitNode(sourceFile, (node) => visitNode(node, () => {})) as ts.SourceFile;
+      const visitedFunctions: ts.Node[] = [];
+      const onFunctionVisited = (node: ts.Node) => {
+        visitedFunctions.push(node);
+      }
+      return ts.visitNode(sourceFile, (node) => visitNode(node, onFunctionVisited)) as ts.SourceFile;
     };
   };
 }
