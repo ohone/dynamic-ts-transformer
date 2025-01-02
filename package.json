@@ -4,10 +4,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "oldbuild": "tsc -p tsconfig.scripts.json && node scripts/build-types.js && tsc",
     "build": "tsc",
     "dev": "NODE_ENV=development tsc && node dist/dev.js",
-    "test": "npm run test"
+    "test": "vitest"
   },
   "files": [
     "dist"
@@ -16,10 +15,10 @@
   "author": "",
   "license": "ISC",
   "description": "",
-  "dependencies": {
-    "typescript": "^5.6.3"
-  },
   "devDependencies": {
-    "@types/node": "^22.8.1"
+    "@types/node": "^22.8.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }

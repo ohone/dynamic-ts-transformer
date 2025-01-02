@@ -2,6 +2,7 @@ export function getTypeDefinitions(asyncProxyNames, nonProxyNames, debug = false
     const typeDef = `
 declare global {
     interface AsyncMock {
+        __isAsyncMock: true;
         [K: string]: ((...args: any[]) => AsyncMock);
     }
 

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { getTypeDefinitions } from "./type-definitions";
+import { getTypeDefinitions } from "./type-definitions.js";
 
 const rootFileName = "input.ts";
 const runtimeTypes: Record<
@@ -21,18 +21,18 @@ export async function createTypeChecker(
     globalNonProxyNames,
     debug
   );
-  const program = createProgram(compilerHost);
+  const program = createProgram(compilerHost, ["my-runtime-types"]);
   const typeChecker = program.getTypeChecker();
 
   return typeChecker;
 }
 
-function createProgram(compilerHost: ts.CompilerHost) {
+function createProgram(compilerHost: ts.CompilerHost, types: string[]) {
   // Create a program to trigger lib loading
   const program = ts.createProgram({
     rootNames: [rootFileName],
     options: {
-      types: ["my-runtime-types"],
+      types: types,
       target: ts.ScriptTarget.ESNext,
     },
     host: compilerHost,
