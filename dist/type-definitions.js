@@ -7,7 +7,10 @@ declare global {
     }
 
     function isProxy(obj: any): obj is AsyncMock;
-    type NonProxy = { [key: string]: any };
+    interface NonProxy { 
+        __notAsyncMock: true;
+        [key: string]: any;
+    }
 
     ${asyncProxyNames.map((name) => `const ${name}: AsyncMock;`).join("\n    ")}
     ${nonProxyNames.map((name) => `const ${name}: NonProxy;`).join("\n    ")}

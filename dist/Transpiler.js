@@ -1,6 +1,5 @@
-import ts from "typescript";
 import { createTypeChecker } from "./TypeChecker.js";
-import { printNode } from "./Printer.js";
+import * as ts from "typescript";
 export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
     const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
@@ -10,7 +9,7 @@ export async function transpileTypescript(codeString, sourceUrl, globalProxyName
             inlineSourceMap: sourceMap,
             inlineSources: sourceMap,
             sourceMap: sourceMap,
-            removeComments: false
+            removeComments: false,
         },
         fileName: sourceUrl,
         transformers: {
@@ -22,95 +21,41 @@ export async function transpileTypescript(codeString, sourceUrl, globalProxyName
     // we then trim those lines before gen of dynamic function, so that we correct the off by 2
     return (outputText.split("\n").slice(2).join("\n") + "\n//# sourceURL=" + sourceUrl);
 }
+function getRootExpression(node) {
+    // Keep unwrapping until we find the leftmost expression
+    if (ts.isCallExpression(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+        while (ts.isCallExpression(node) ||
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)) {
+            node = node.expression;
+        }
+        return node;
+    }
+    if (ts.isBinaryExpression(node)) {
+        return getRootExpression(node.left);
+    }
+    return node;
+}
+function createProxyTernary(maybeProxyExpression, proxyCall, nonProxyCall, factory) {
+    const isProxyCheck = createProxyCheck(maybeProxyExpression);
+    const ternary = factory.createConditionalExpression(isProxyCheck, ts.factory.createToken(ts.SyntaxKind.QuestionToken), proxyCall, ts.factory.createToken(ts.SyntaxKind.ColonToken), nonProxyCall);
+    const awaitExpression = factory.createAwaitExpression(ternary);
+    const parenthesizedAwaitExpression = factory.createParenthesizedExpression(awaitExpression);
+    return parenthesizedAwaitExpression;
+}
 function createTransformer(typeChecker, debug) {
     return (context) => {
         const { factory } = context;
-        function createProxyTernary(maybeProxyExpression, proxyCall, nonProxyCall) {
-            const isProxyCheck = createProxyCheck(maybeProxyExpression);
-            const ternary = factory.createConditionalExpression(isProxyCheck, ts.factory.createToken(ts.SyntaxKind.QuestionToken), proxyCall, ts.factory.createToken(ts.SyntaxKind.ColonToken), nonProxyCall);
-            const awaitExpression = factory.createAwaitExpression(ternary);
-            const parenthesizedAwaitExpression = factory.createParenthesizedExpression(awaitExpression);
-            return parenthesizedAwaitExpression;
-        }
-        function visitExpression(node) {
-            if (ts.isCallExpression(node)) {
-                const transformedCallee = visitExpression(node.expression);
-                const wrappedCallee = ts.factory.createParenthesizedExpression(transformedCallee);
-                const transformedArgs = node.arguments.map((arg) => visitNode(arg));
-                // If transformed callee is different, it means we have something like (await ...).
-                // For calling a remote function: myProxy.foo() → await (await myProxy.foo)()
-                // If we ended up with an awaited property access, that gives us the function. We must now
-                // await the call as well.
-                //
-                // So: call = transformedCallee(...expr.arguments)
-                // Actually, we must wrap the call: await (transformedCallee(...))
-                const nonProxyCall = factory.updateCallExpression(node, transformedCallee, node.typeArguments, transformedArgs);
-                const proxyCall = factory.createCallExpression(ts.factory.createParenthesizedExpression(ts.factory.createAwaitExpression(wrappedCallee)), node.typeArguments, transformedArgs);
-                const ternary = createProxyTernary(wrappedCallee, proxyCall, nonProxyCall);
-                return ternary;
-            }
-            if (ts.isPropertyAccessExpression(node)) {
-                const transformedLeft = visitExpression(node.expression);
-                const proxyCall = factory.createAwaitExpression(factory.createElementAccessExpression(transformedLeft, ts.factory.createStringLiteral(node.name.text)));
-                const nonProxyCall = factory.createPropertyAccessExpression(transformedLeft, node.name.text);
-                const ternary = createProxyTernary(transformedLeft, proxyCall, nonProxyCall);
-                return ternary;
-            }
-            if (ts.isElementAccessExpression(node)) {
-                const transformedLeft = visitExpression(node.expression);
-                const proxyCall = factory.createAwaitExpression(factory.createElementAccessExpression(transformedLeft, node.argumentExpression));
-                const nonProxyCall = factory.createElementAccessExpression(transformedLeft, node.argumentExpression);
-                const ternary = createProxyTernary(transformedLeft, proxyCall, nonProxyCall);
-                return ternary;
-            }
-            if (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                (ts.isPropertyAccessExpression(node.left) ||
-                    ts.isElementAccessExpression(node.left))) {
-                const left = node.left;
-                const right = node.right;
-                // Check if the left-hand side is accessing an AsyncMock
-                // The final property name:
-                const propertyName = ts.isPropertyAccessExpression(node.left)
-                    ? node.left.name.text
-                    : node.left.argumentExpression.getText();
-                // Transform the right-hand side in case it involves proxies:
-                const transformedRight = visitExpression(right);
-                // Now we must get the object on which to call setProp.
-                // For `myProxy.foo.bar = value`, `parentExpr` = `myProxy.foo`.
-                const parentExpr = left.expression;
-                // Transform that parent to be fully awaited:
-                // For `myProxy.foo.bar`, transform `myProxy.foo` into `await myProxy.foo`.
-                const transformedParent = visitExpression(parentExpr);
-                // Now we create: await (transformedParent.setProp("propertyName", transformedRight))
-                const setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [factory.createStringLiteral(propertyName), transformedRight]);
-                return factory.createAwaitExpression(setPropCall);
-            }
-            // Handle other Binary Expressions (operators involving proxies)
-            // e.g. myProxy.x + 10, myProxy.y && someVar, myProxy.x > 5
-            if (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
-                // Transform left and right if needed
-                const left = visitNode(node.left);
-                const right = visitNode(node.right);
-                // If either side changed (indicating async involvement), we return the updated expression.
-                if (left !== node.left || right !== node.right) {
-                    return factory.updateBinaryExpression(node, left, node.operatorToken, right);
-                }
-            }
-            printNode(node, true);
-            return node;
-        }
-        function visitNode(node) {
+        function visitNode(node, onFunctionVisited) {
             if (ts.isExpression(node)) {
-                const newExpression = visitExpression(node);
+                const newExpression = visitExpression(node, factory, (node) => visitNode(node, onFunctionVisited), typeChecker, onFunctionVisited, context);
                 if (newExpression !== node) {
                     return newExpression;
                 }
             }
             // Handle Variable Declarations (e.g. const a = myProxy.foo.bar;)
             if (ts.isVariableDeclaration(node) && node.initializer) {
-                const newInit = visitExpression(node.initializer);
+                const newInit = visitExpression(node.initializer, factory, (node) => visitNode(node, onFunctionVisited), typeChecker, onFunctionVisited, context);
                 if (newInit !== node.initializer) {
                     return factory.updateVariableDeclaration(node, node.name, node.exclamationToken, node.type, newInit);
                 }
@@ -131,7 +76,63 @@ function createTransformer(typeChecker, debug) {
                     // and replace the loop expression with that variable.
                 }
             }
-            return ts.visitEachChild(node, visitNode, context);
+            // Make functions async if transformed
+            if (ts.isFunctionDeclaration(node)) {
+                if (!functionAlreadyAsync(node)) {
+                    const newBody = node.body
+                        ? visitNode(node.body, onFunctionVisited)
+                        : undefined;
+                    if (newBody !== node.body) {
+                        const newModifiers = node.modifiers
+                            ? [
+                                ...node.modifiers,
+                                factory.createModifier(ts.SyntaxKind.AsyncKeyword),
+                            ]
+                            : [factory.createModifier(ts.SyntaxKind.AsyncKeyword)];
+                        const newFunction = factory.updateFunctionDeclaration(node, newModifiers, node.asteriskToken, node.name, node.typeParameters, node.parameters, node.type, newBody);
+                        onFunctionVisited(newFunction);
+                        return newFunction;
+                    }
+                    return node;
+                }
+            }
+            // Make functions async if transformed
+            if (ts.isArrowFunction(node)) {
+                if (!functionAlreadyAsync(node)) {
+                    const newBody = visitNode(node.body, onFunctionVisited);
+                    if (newBody !== node.body) {
+                        const newModifiers = node.modifiers
+                            ? [
+                                ...node.modifiers,
+                                factory.createModifier(ts.SyntaxKind.AsyncKeyword),
+                            ]
+                            : [factory.createModifier(ts.SyntaxKind.AsyncKeyword)];
+                        const newFunction = factory.updateArrowFunction(node, newModifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, newBody);
+                        onFunctionVisited(newFunction);
+                        return newFunction;
+                    }
+                    return node;
+                }
+            }
+            // Make functions async if transformed
+            if (ts.isFunctionExpression(node)) {
+                if (!functionAlreadyAsync(node)) {
+                    const newBody = visitNode(node.body, onFunctionVisited);
+                    if (newBody !== node.body) {
+                        const newModifiers = node.modifiers
+                            ? [
+                                ...node.modifiers,
+                                factory.createModifier(ts.SyntaxKind.AsyncKeyword),
+                            ]
+                            : [factory.createModifier(ts.SyntaxKind.AsyncKeyword)];
+                        const newFunction = factory.updateFunctionExpression(node, newModifiers, node.asteriskToken, node.name, node.typeParameters, node.parameters, node.type, newBody);
+                        onFunctionVisited(newFunction);
+                        return newFunction;
+                    }
+                    return node;
+                }
+            }
+            return ts.visitEachChild(node, (ctx) => visitNode(ctx, onFunctionVisited), context);
         }
         /**
          * Recursively transforms expressions if they involve `AsyncMock` proxy accesses.
@@ -143,22 +144,198 @@ function createTransformer(typeChecker, debug) {
          * - Chained calls: myProxy.x.y()(z) → await ((await (await (await myProxy.x).y)())(z))
          */
         return (sourceFile) => {
-            return ts.visitNode(sourceFile, visitNode);
+            const visitedFunctions = [];
+            const onFunctionVisited = (node) => {
+                visitedFunctions.push(node);
+            };
+            return ts.visitNode(sourceFile, (node) => visitNode(node, onFunctionVisited));
         };
     };
 }
-function isAsyncMock(typeChecker, node) {
-    // Direct identifier: Check the type of the identifier.
-    const nodeType = typeChecker.getTypeAtLocation(node);
-    return typeIsOrExtendsAsyncMock(nodeType, typeChecker);
+function visitAsyncMockExpression(node, factory, visitNode, typeChecker, onFunctionVisited, context) {
+    if (ts.isCallExpression(node)) {
+        return transformCallExpression(node, factory, visitNode, typeChecker, onFunctionVisited, (exp) => visitAsyncMockExpression(exp, factory, visitNode, typeChecker, onFunctionVisited, context), context);
+    }
+    if (ts.isElementAccessExpression(node)) {
+        return transformElementAccessExpression(node, factory, (exp) => visitAsyncMockExpression(exp, factory, visitNode, typeChecker, onFunctionVisited, context), visitNode, typeChecker, onFunctionVisited, context);
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        return transformPropertyAccessExpression(node, factory, (exp) => visitAsyncMockExpression(exp, factory, visitNode, typeChecker, onFunctionVisited, context));
+    }
+    if (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        (ts.isPropertyAccessExpression(node.left) ||
+            ts.isElementAccessExpression(node.left))) {
+        const left = node.left;
+        const right = node.right;
+        // Check if the left-hand side is accessing an AsyncMock
+        // The final property name:
+        const propertyName = ts.isPropertyAccessExpression(node.left)
+            ? node.left.name.text
+            : node.left.argumentExpression.getText();
+        // Transform the right-hand side in case it involves proxies:
+        const transformedRight = visitAsyncMockExpression(right, factory, visitNode, typeChecker, onFunctionVisited, context);
+        // Now we must get the object on which to call setProp.
+        // For `myProxy.foo.bar = value`, `parentExpr` = `myProxy.foo`.
+        const parentExpr = left.expression;
+        // Transform that parent to be fully awaited:
+        // For `myProxy.foo.bar`, transform `myProxy.foo` into `await myProxy.foo`.
+        const transformedParent = visitAsyncMockExpression(parentExpr, factory, visitNode, typeChecker, onFunctionVisited, context);
+        // Now we create: await (transformedParent.setProp("propertyName", transformedRight))
+        const setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [factory.createStringLiteral(propertyName), transformedRight]);
+        return factory.createAwaitExpression(setPropCall);
+    }
+    return ts.visitEachChild(node, visitNode, context);
 }
-function typeIsOrExtendsAsyncMock(type, checker) {
+function visitUnknownAsyncMockExpression(node, factory, visitNode, typeChecker, onFunctionVisited, context, bindExpression = false) {
+    if (ts.isCallExpression(node)) {
+        const transformedArgs = node.arguments.map((arg) => visitExpression(arg, factory, visitNode, typeChecker, onFunctionVisited, context));
+        if (ts.isIdentifier(node.expression)) {
+            return factory.createParenthesizedExpression(factory.createAwaitExpression(factory.updateCallExpression(node, node.expression, node.typeArguments, transformedArgs)));
+        }
+        const transformedCallee = visitUnknownAsyncMockExpression(node.expression, factory, visitNode, typeChecker, onFunctionVisited, context, true // bind expression result, we know it's a function
+        );
+        // If transformed callee is different, it means we have something like (await ...).
+        // For calling a remote function: myProxy.foo() → await (await myProxy.foo)()
+        // If we ended up with an awaited property access, that gives us the function. We must now
+        // await the call as well.
+        //
+        // So: call = transformedCallee(...expr.arguments)
+        // Actually, we must wrap the call: await (transformedCallee(...))
+        const nonProxyCall = factory.updateCallExpression(node, transformedCallee, node.typeArguments, transformedArgs);
+        const proxyCall = factory.createCallExpression(ts.factory.createParenthesizedExpression(factory.createAwaitExpression(transformedCallee)), node.typeArguments, transformedArgs);
+        const ternary = createProxyTernary(transformedCallee, proxyCall, nonProxyCall, factory);
+        return ternary;
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        const transformedLeft = visitUnknownAsyncMockExpression(node.expression, factory, visitNode, typeChecker, onFunctionVisited, context);
+        const propertyAccessExpression = factory.createPropertyAccessExpression(transformedLeft, node.name.text);
+        return bindExpression
+            ? factory.createCallExpression(factory.createPropertyAccessExpression(propertyAccessExpression, "bind"), undefined, [transformedLeft])
+            : factory.createParenthesizedExpression(factory.createAwaitExpression(propertyAccessExpression));
+    }
+    if (ts.isElementAccessExpression(node)) {
+        return factory.createAwaitExpression(node);
+    }
+    if (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        (ts.isPropertyAccessExpression(node.left) ||
+            ts.isElementAccessExpression(node.left))) {
+        const left = node.left;
+        const right = node.right;
+        // Check if the left-hand side is accessing an AsyncMock
+        // The final property name:
+        const propertyName = ts.isPropertyAccessExpression(node.left)
+            ? node.left.name.text
+            : node.left.argumentExpression.getText();
+        // Transform the right-hand side in case it involves proxies:
+        const transformedRight = visitUnknownAsyncMockExpression(right, factory, visitNode, typeChecker, onFunctionVisited, context);
+        // Now we must get the object on which to call setProp.
+        // For `myProxy.foo.bar = value`, `parentExpr` = `myProxy.foo`.
+        const parentExpr = left.expression;
+        // Transform that parent to be fully awaited:
+        // For `myProxy.foo.bar`, transform `myProxy.foo` into `await myProxy.foo`.
+        const transformedParent = visitUnknownAsyncMockExpression(parentExpr, factory, visitNode, typeChecker, onFunctionVisited, context);
+        // Now we create: await (transformedParent.setProp("propertyName", transformedRight))
+        const setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [factory.createStringLiteral(propertyName), transformedRight]);
+        return factory.createAwaitExpression(setPropCall);
+    }
+    // Handle other Binary Expressions (operators involving proxies)
+    // e.g. myProxy.x + 10, myProxy.y && someVar, myProxy.x > 5
+    if (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+        // Transform left and right if needed
+        const left = visitUnknownAsyncMockExpression(node.left, factory, visitNode, typeChecker, onFunctionVisited, context);
+        const right = visitUnknownAsyncMockExpression(node.right, factory, visitNode, typeChecker, onFunctionVisited, context);
+        // If either side changed (indicating async involvement), we return the updated expression.
+        if (left !== node.left || right !== node.right) {
+            return factory.updateBinaryExpression(node, left, node.operatorToken, right);
+        }
+    }
+    if (ts.isArrowFunction(node)) {
+        const hasAsync = node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword);
+        const newModifiers = !hasAsync
+            ? (node.modifiers
+                ? [...node.modifiers, factory.createModifier(ts.SyntaxKind.AsyncKeyword)]
+                : [factory.createModifier(ts.SyntaxKind.AsyncKeyword)])
+            : node.modifiers;
+        if (ts.isBlock(node.body)) {
+            const transformedStatements = node.body.statements.map((stmt) => visitNode(stmt));
+            const newBlock = ts.factory.createBlock(transformedStatements, true);
+            return factory.updateArrowFunction(node, newModifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, newBlock);
+        }
+        else {
+            const updatedBody = visitNode(node.body);
+            return factory.updateArrowFunction(node, newModifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, updatedBody);
+        }
+    }
+    return node;
+}
+function visitExpression(node, factory, visitNode, typeChecker, onFunctionVisited, context) {
+    const asyncMockStatus = getAsyncMockStatus(typeChecker, node);
+    if (asyncMockStatus === AsyncMockStatus.AsyncMock) {
+        return visitAsyncMockExpression(node, factory, visitNode, typeChecker, onFunctionVisited, context);
+    }
+    if (asyncMockStatus === AsyncMockStatus.NonAsyncMock) {
+        return node;
+    }
+    return visitUnknownAsyncMockExpression(node, factory, visitNode, typeChecker, onFunctionVisited, context);
+}
+function transformCallExpression(node, factory, visitNode, typeChecker, onFunctionVisited, visitChildren, context) {
+    const transformedCallee = visitChildren(node.expression);
+    const wrappedCallee = ts.factory.createParenthesizedExpression(transformedCallee);
+    const transformedArgs = node.arguments.map((arg) => visitExpression(arg, factory, visitNode, typeChecker, onFunctionVisited, context));
+    return factory.createAwaitExpression(factory.createCallExpression(ts.factory.createParenthesizedExpression(ts.factory.createAwaitExpression(wrappedCallee)), node.typeArguments, transformedArgs));
+}
+function transformPropertyAccessExpression(node, factory, visitChildren) {
+    const transformedExpression = visitChildren(node.expression);
+    return factory.createAwaitExpression(factory.createPropertyAccessExpression(transformedExpression, node.name.text));
+}
+function transformElementAccessExpression(node, factory, visitChildren, visitNode, typeChecker, onFunctionVisited, context) {
+    const transformedExpression = visitChildren(node.expression);
+    const transformedArgument = visitExpression(node.argumentExpression, factory, visitNode, typeChecker, onFunctionVisited, context);
+    return factory.createAwaitExpression(factory.createElementAccessExpression(transformedExpression, transformedArgument));
+}
+var AsyncMockStatus;
+(function (AsyncMockStatus) {
+    AsyncMockStatus[AsyncMockStatus["AsyncMock"] = 0] = "AsyncMock";
+    AsyncMockStatus[AsyncMockStatus["NonAsyncMock"] = 1] = "NonAsyncMock";
+    AsyncMockStatus[AsyncMockStatus["Unknown"] = 2] = "Unknown";
+})(AsyncMockStatus || (AsyncMockStatus = {}));
+function getAsyncMockStatus(typeChecker, node) {
+    const leftMost = getRootExpression(node);
+    const nodeType = typeChecker.getTypeAtLocation(leftMost);
+    const isAsyncMock = typeIsOrExtendsAsyncMock(nodeType);
+    if (isAsyncMock) {
+        return AsyncMockStatus.AsyncMock;
+    }
+    const isNonProxy = typeIsOrExtendsNonProxy(nodeType);
+    if (isNonProxy) {
+        return AsyncMockStatus.NonAsyncMock;
+    }
+    else {
+        return AsyncMockStatus.Unknown;
+    }
+}
+function functionAlreadyAsync(node) {
+    return node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+}
+function typeIsOrExtendsAsyncMock(type) {
     // If we gave `AsyncMock` a unique brand:
     // Check for presence of __isAsyncMock property
     const props = type.getProperties();
     return props.some((sym) => sym.getName() === "__isAsyncMock");
 }
+function typeIsOrExtendsNonProxy(type) {
+    const props = type.getProperties();
+    return props.some((sym) => sym.getName() === "__notAsyncMock");
+}
 function createProxyCheck(expr) {
     return ts.factory.createPropertyAccessChain(expr, ts.factory.createToken(ts.SyntaxKind.QuestionDotToken), "isProxy");
+}
+function isAsyncMock(typeChecker, node) {
+    // Direct identifier: Check the type of the identifier.
+    const nodeType = typeChecker.getTypeAtLocation(node);
+    return typeIsOrExtendsAsyncMock(nodeType);
 }
 //# sourceMappingURL=Transpiler.js.map
