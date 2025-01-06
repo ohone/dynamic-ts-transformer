@@ -1,9 +1,6 @@
 import ts from "typescript";
-import { getTypeDefinitions } from "./type-definitions.js";
-const rootFileName = "input.ts";
-const runtimeTypes = {
-    "node_modules/my-runtime-types.d.ts": getTypeDefinitions,
-};
+import { createTypeChecker } from "./TypeChecker";
+import { printNode } from "./Printer";
 export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
     const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
@@ -24,74 +21,6 @@ export async function transpileTypescript(codeString, sourceUrl, globalProxyName
     // we then trim those lines before gen of dynamic function, so that we correct the off by 2
     return (outputText.split("\n").slice(2).join("\n") + "\n//# sourceURL=" + sourceUrl);
 }
-async function createTypeChecker(sourceCode, globalProxyNames, globalNonProxyNames, debug) {
-    const compilerHost = await createInMemoryCompilerHost(sourceCode, globalProxyNames, globalNonProxyNames, debug);
-    const program = createProgram(compilerHost);
-    return program.getTypeChecker();
-}
-function createProgram(compilerHost) {
-    // Create a program to trigger lib loading
-    const program = ts.createProgram({
-        rootNames: [rootFileName],
-        options: {
-            types: ["my-runtime-types"],
-            target: ts.ScriptTarget.ESNext,
-        },
-        host: compilerHost,
-    });
-    return program;
-}
-async function createInMemoryCompilerHost(sourceCode, globalProxyNames, globalNonProxyNames, debug = false) {
-    const sourceFile = ts.createSourceFile(rootFileName, sourceCode, ts.ScriptTarget.Latest, true);
-    return {
-        getSourceFile: (fileName, languageVersion) => {
-            if (fileName === rootFileName) {
-                return sourceFile;
-            }
-            if (runtimeTypes[fileName] !== undefined) {
-                debug && console.log("Loading lib file:", fileName);
-                return ts.createSourceFile(fileName, runtimeTypes[fileName](globalProxyNames, globalNonProxyNames, debug), languageVersion);
-            }
-            debug && console.warn("[getFileSource]File does not exist:", fileName);
-            return undefined;
-        },
-        writeFile: () => { },
-        getDefaultLibFileName: () => "lib.d.ts",
-        useCaseSensitiveFileNames: () => false,
-        getCanonicalFileName: (fileName) => fileName,
-        getCurrentDirectory: () => "",
-        getNewLine: () => "\n",
-        getDirectories: () => [],
-        fileExists: (fileName) => {
-            if (fileName === rootFileName) {
-                return true;
-            }
-            if (runtimeTypes[fileName] !== undefined) {
-                debug && console.log("Checking for lib file:", fileName);
-                return true;
-            }
-            debug && console.warn("[fileExists]File does not exist:", fileName);
-            return false;
-        },
-        readFile: (fileName) => {
-            if (fileName === rootFileName) {
-                return sourceCode;
-            }
-            if (runtimeTypes[fileName] !== undefined) {
-                debug && console.log("Reading lib file:", fileName);
-                return runtimeTypes[fileName](globalProxyNames, globalNonProxyNames, debug);
-            }
-            debug && console.warn("[readFile]File does not exist:", fileName);
-            return undefined;
-        },
-    };
-}
-const getPrinter = (() => {
-    let printer = undefined;
-    return () => (printer ??= ts.createPrinter({ newLine: ts.NewLineKind.LineFeed }));
-})();
-const printNode = (node, debug) => debug &&
-    console.log(getPrinter().printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()));
 function createTransformer(typeChecker, debug) {
     // FIFO queue of functions that have been transformed
     const transformedFunctions = [];
