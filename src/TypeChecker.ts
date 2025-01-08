@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { getTypeDefinitions } from "./type-definitions";
+import { getTypeDefinitions } from "./type-definitions.js";
 
 const rootFileName = "input.ts";
 const runtimeTypes: Record<

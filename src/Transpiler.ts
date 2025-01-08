@@ -1,6 +1,6 @@
 import ts from "typescript";
-import { createTypeChecker } from "./TypeChecker";
-import { printNode } from "./Printer";
+import { createTypeChecker } from "./TypeChecker.js";
+import { printNode } from "./Printer.js";
 
 export async function transpileTypescript(
   codeString: string,

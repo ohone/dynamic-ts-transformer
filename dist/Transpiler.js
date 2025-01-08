@@ -1,6 +1,6 @@
 import ts from "typescript";
-import { createTypeChecker } from "./TypeChecker";
-import { printNode } from "./Printer";
+import { createTypeChecker } from "./TypeChecker.js";
+import { printNode } from "./Printer.js";
 export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
     const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
