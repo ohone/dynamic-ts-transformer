@@ -1,7 +1,7 @@
 import { transpileTypescript } from "./index.js";
 if (import.meta.url === `file://${process.argv[1]}`) {
   const i1 = `
-    const actionHistory = actionHistoryResult[key];
+    const actionHistory = actinThin === actionHistoryResult[key];
 
   `;
 
