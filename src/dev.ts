@@ -1,7 +1,10 @@
 import { transpileTypescript } from "./index.js";
 if (import.meta.url === `file://${process.argv[1]}`) {
   const i1 = `
-    const actionHistory = actinThin === actionHistoryResult[key];
+
+
+              const notUndefined = actionHistory !== undefined;
+
 
   `;
 
@@ -22,3 +25,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     window.addEventListener("message", (event) => {
       const b = input.value;
 */
+
+// 0 < 17
+// i < 17

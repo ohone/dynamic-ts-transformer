@@ -1,6 +1,6 @@
 import { createTypeChecker } from "./TypeChecker.js";
 import * as ts from "typescript";
-export async function transpileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
+export async function originalTranspileTypescript(codeString, sourceUrl, globalProxyNames = [], globalNonProxyNames = [], debug = false, sourceMap = true) {
     const typeChecker = await createTypeChecker(codeString, globalProxyNames, [...globalNonProxyNames, "JSON"], debug);
     const { outputText } = ts.transpileModule(`//\n//\n` + codeString, {
         compilerOptions: {
@@ -205,9 +205,12 @@ function visitUnknownAsyncMockExpression(node, factory, visitNode, visitExpressi
     if (ts.isPropertyAccessExpression(node)) {
         const transformedLeft = visitUnknownAsyncMockExpression(node.expression, factory, visitNode, visitExpression, typeChecker, onFunctionVisited, context);
         const propertyAccessExpression = factory.createPropertyAccessExpression(transformedLeft, node.name.text);
-        return bindExpression
-            ? factory.createCallExpression(factory.createPropertyAccessExpression(propertyAccessExpression, "bind"), undefined, [transformedLeft])
-            : factory.createParenthesizedExpression(factory.createAwaitExpression(propertyAccessExpression));
+        if (!bindExpression) {
+            return factory.createParenthesizedExpression(factory.createAwaitExpression(propertyAccessExpression));
+        }
+        const awaitedPropertyAccessExpression = factory.createParenthesizedExpression(factory.createAwaitExpression(propertyAccessExpression));
+        const ternary = createProxyTernary(awaitedPropertyAccessExpression, awaitedPropertyAccessExpression, factory.createCallExpression(factory.createPropertyAccessExpression(propertyAccessExpression, "bind"), undefined, [transformedLeft]), factory);
+        return ternary;
     }
     if (ts.isElementAccessExpression(node)) {
         return factory.createAwaitExpression(node);
@@ -218,11 +221,6 @@ function visitUnknownAsyncMockExpression(node, factory, visitNode, visitExpressi
             ts.isElementAccessExpression(node.left))) {
         const left = node.left;
         const right = node.right;
-        // Check if the left-hand side is accessing an AsyncMock
-        // The final property name:
-        const propertyName = ts.isPropertyAccessExpression(node.left)
-            ? node.left.name.text
-            : node.left.argumentExpression.getText();
         // Transform the right-hand side in case it involves proxies:
         const transformedRight = visitUnknownAsyncMockExpression(right, factory, visitNode, visitExpression, typeChecker, onFunctionVisited, context);
         // Now we must get the object on which to call setProp.
@@ -231,14 +229,20 @@ function visitUnknownAsyncMockExpression(node, factory, visitNode, visitExpressi
         // Transform that parent to be fully awaited:
         // For `myProxy.foo.bar`, transform `myProxy.foo` into `await myProxy.foo`.
         const transformedParent = visitUnknownAsyncMockExpression(parentExpr, factory, visitNode, visitExpression, typeChecker, onFunctionVisited, context);
-        // Now we create: await (transformedParent.setProp("propertyName", transformedRight))
-        const setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [factory.createStringLiteral(propertyName), transformedRight]);
-        return factory.createAwaitExpression(setPropCall);
+        let setPropCall = undefined;
+        // The final property name:
+        if (ts.isPropertyAccessExpression(node.left)) {
+            const propertyName = node.left.name.text;
+            setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [factory.createStringLiteral(propertyName), transformedRight]);
+        }
+        else {
+            const propertyName = node.left.argumentExpression;
+            setPropCall = factory.createCallExpression(factory.createPropertyAccessExpression(transformedParent, factory.createIdentifier("__setProp")), undefined, [propertyName, transformedRight]);
+        }
+        return createProxyTernary(transformedParent, setPropCall, factory.createBinaryExpression(left, node.operatorToken, transformedRight), factory);
     }
-    // Handle other Binary Expressions (operators involving proxies)
-    // e.g. myProxy.x + 10, myProxy.y && someVar, myProxy.x > 5
-    if (ts.isBinaryExpression(node) &&
-        node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    // check if its a comparison expression
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
         return transformComparisonExpression(node, factory, visitExpression);
     }
     if (ts.isArrowFunction(node)) {
@@ -294,7 +298,7 @@ function createCompareCall(factory, target, value, operatorKind) {
             factory.createPropertyAssignment("value", value),
             // Here is where we also store the numeric operatorKind
             factory.createPropertyAssignment("operatorKind", factory.createNumericLiteral(operatorKind)),
-        ])
+        ]),
     ]));
 }
 function transformComparisonExpression(node, factory, visitExpression) {
@@ -322,16 +326,16 @@ export function flipOperator(kind) {
     switch (kind) {
         case ts.SyntaxKind.GreaterThanToken:
             // x > a => a <= x
-            return ts.SyntaxKind.LessThanEqualsToken;
+            return ts.SyntaxKind.LessThanToken;
         case ts.SyntaxKind.GreaterThanEqualsToken:
             // x >= a => a < x
-            return ts.SyntaxKind.LessThanToken;
+            return ts.SyntaxKind.LessThanEqualsToken;
         case ts.SyntaxKind.LessThanToken:
             // x < a => a >= x
-            return ts.SyntaxKind.GreaterThanEqualsToken;
+            return ts.SyntaxKind.GreaterThanToken;
         case ts.SyntaxKind.LessThanEqualsToken:
             // x <= a => a > x
-            return ts.SyntaxKind.GreaterThanToken;
+            return ts.SyntaxKind.GreaterThanEqualsToken;
         // Equality and inequality operators are symmetric (flipping them doesn't change the meaning):
         case ts.SyntaxKind.EqualsEqualsEqualsToken:
             return ts.SyntaxKind.EqualsEqualsEqualsToken;
