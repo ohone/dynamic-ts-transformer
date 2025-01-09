@@ -2,7 +2,7 @@ import ts from "typescript";
 import { createTypeChecker } from "./TypeChecker.js";
 import { printNode } from "./Printer.js";
 
-export async function transpileTypescript(
+export async function originalTranspileTypescript(
   codeString: string,
   sourceUrl?: string | undefined,
   globalProxyNames: string[] = [],
