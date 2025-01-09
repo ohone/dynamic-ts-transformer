@@ -12,7 +12,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "moduleResolution": "node",
+    "moduleResolution": "node"
   },
   "include": ["src", "src/types/**/*.d.ts"],
   "exclude": ["node_modules"]
